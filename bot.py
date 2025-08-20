@@ -61,7 +61,6 @@ def public_url_for(raw: str) -> str:
     s = (raw or "").lstrip("@")
     return f"https://t.me/{s}"
 
-# ========= واجهة المستخدم =========
 def build_main_menu() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("🤖 ذكاء اصطناعي", callback_data="sec:ai")],
@@ -86,6 +85,17 @@ def build_gate_keyboard(missing: List[str]) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")
     ])
     return InlineKeyboardMarkup(buttons)
+
+# ========= دالة تعديل آمنة لتفادي "Message is not modified" =========
+async def safe_edit_text(msg, text: str, reply_markup: InlineKeyboardMarkup | None = None):
+    try:
+        await msg.edit_text(text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            # تجاهل الخطأ إذا نفس المحتوى/الأزرار
+            log.info("safe_edit_text: not modified, ignoring.")
+        else:
+            raise
 
 # ========= التحقق من الاشتراك =========
 async def is_member_of(chat_raw: str, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -143,13 +153,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "- القنوات الخاصة: استخدم -100… في REQUIRED_CHANNELS.\n"
                 "ثم اضغط «✅ تحقّق الاشتراك» مجددًا."
             )
-            await q.message.edit_text(text, reply_markup=build_gate_keyboard(missing))
+            await safe_edit_text(q.message, text, reply_markup=build_gate_keyboard(missing))
             return
-        await q.message.edit_text("✅ تم التحقق. اختر قسمًا:", reply_markup=build_main_menu())
+        await safe_edit_text(q.message, "✅ تم التحقق. اختر قسمًا:", reply_markup=build_main_menu())
         return
 
     if data == "menu":
-        await q.message.edit_text("📚 القائمة الرئيسية:", reply_markup=build_main_menu())
+        await safe_edit_text(q.message, "📚 القائمة الرئيسية:", reply_markup=build_main_menu())
         return
 
     if data.startswith("sec:"):
@@ -196,10 +206,11 @@ def main():
     app = web.Application()
     app.router.add_get("/", root)
     app.router.add_get("/health", health)
-    app.router.add_get("/healthz", health)  # ← أضفنا /healthz لـ Render
+    app.router.add_get("/healthz", health)  # دعم healthz
 
     log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
 
 if __name__ == "__main__":
     main()
+
