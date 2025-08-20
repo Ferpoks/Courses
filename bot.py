@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Courses Library Bot (PTB v21.x)
-- Render-friendly: aiohttp health server on $PORT (main thread)
+- Render-friendly: aiohttp health server on $PORT (main thread) with /healthz, /health, /
 - Subscription gate (channels/groups) قبل الاستخدام
 - زر تواصل مع الإدارة
 """
@@ -78,8 +78,8 @@ def build_main_menu() -> InlineKeyboardMarkup:
 def build_gate_keyboard(missing: List[str]) -> InlineKeyboardMarkup:
     buttons = []
     for ch in missing:
-        if isinstance(ch, str) and not ch.startswith("-100"):
-            buttons.append([InlineKeyboardButton(f"📢 اشترك في {ch.lstrip('@')}", url=public_url_for(ch))])
+        if isinstance(ch, str) and not str(ch).startswith("-100"):
+            buttons.append([InlineKeyboardButton(f"📢 اشترك في {str(ch).lstrip('@')}", url=public_url_for(str(ch)))])
     buttons.append([
         InlineKeyboardButton("✅ تحقّق الاشتراك", callback_data="verify"),
         InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")
@@ -92,7 +92,6 @@ async def safe_edit_text(msg, text: str, reply_markup: InlineKeyboardMarkup | No
         await msg.edit_text(text, reply_markup=reply_markup)
     except BadRequest as e:
         if "Message is not modified" in str(e):
-            # تجاهل الخطأ إذا نفس المحتوى/الأزرار
             log.info("safe_edit_text: not modified, ignoring.")
         else:
             raise
@@ -116,7 +115,7 @@ async def passes_gate(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple
     missing = []
     for ch in REQUIRED_CHANNELS:
         if not await is_member_of(ch, user_id, context):
-            missing.append(ch if ch.startswith("@") or ch.startswith("-100") else f"@{ch}")
+            missing.append(ch if str(ch).startswith("@") or str(ch).startswith("-100") else f"@{ch}")
     return (len(missing) == 0), missing
 
 # ========= الهاندلرز =========
@@ -194,21 +193,23 @@ def run_telegram_bot():
         log.exception("❌ Telegram thread crashed: %s", e)
 
 # ========= Health/Web =========
-async def health(_request):
-    return web.Response(text="OK")
-
-async def root(_request):
-    return web.Response(text="Courses Bot is alive")
+async def health_handler(_request):
+    return web.Response(text="OK")  # 200
 
 def main():
+    # شغّل البوت في ثريد جانبي
     threading.Thread(target=run_telegram_bot, daemon=True).start()
 
+    # aiohttp في الخيط الرئيسي
     app = web.Application()
-    app.router.add_get("/", root)
-    app.router.add_get("/health", health)
-    app.router.add_get("/healthz", health)  # دعم healthz
 
-    log.info("🌐 Health server on 0.0.0.0:%s", PORT)
+    # غطِّ كل المسارات الشائعة التي تضربها Render
+    health_paths = ["/healthz", "/healthz/", "/health", "/health/", "/"]
+    for p in health_paths:
+        app.router.add_route("GET", p, health_handler)
+        app.router.add_route("HEAD", p, health_handler)
+
+    log.info("🌐 Health server on 0.0.0.0:%s (paths: %s)", PORT, ", ".join(health_paths))
     web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
 
 if __name__ == "__main__":
