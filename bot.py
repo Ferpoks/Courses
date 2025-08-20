@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
 from pathlib import Path
+import threading
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+
 from aiohttp import web
 
 # ========= الإعدادات =========
@@ -11,6 +14,7 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
 
 ASSETS_DIR = Path("assets")
+PORT = int(os.getenv("PORT", "10000"))  # Render يوفر PORT تلقائياً
 
 # ========= واجهة المستخدم =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,48 +24,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🛡️ أمن سيبراني واختراق", callback_data="cyber")],
         [InlineKeyboardButton("💼 تجارة وتسويق", callback_data="business")],
     ]
-    await update.message.reply_text(
-        "📚 مرحباً بك في مكتبة الكورسات\n\nاختر القسم المطلوب:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    text = (
+        "📚 مرحباً بك في مكتبة الكورسات\n\n"
+        "اختر القسم المطلوب لإرسال ملف PDF الموثوق:"
     )
+    if update.message:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    section = query.data
+async def send_section_pdf(query_message, section: str):
     file_map = {
         "ai": "courses_ai.pdf",
         "python": "courses_python.pdf",
         "cyber": "courses_cyber.pdf",
         "business": "courses_business.pdf",
     }
-    file_path = ASSETS_DIR / file_map.get(section, "")
+    filename = file_map.get(section, "")
+    file_path = ASSETS_DIR / filename
     if file_path.exists():
-        await query.message.reply_document(
+        await query_message.reply_document(
             InputFile(file_path),
-            caption=f"📘 هذا ملف {section} يحتوي على دورات وكتب موثوقة"
+            caption=f"📘 ملف {filename} — يحتوي دورات وكتب وروابط موثوقة"
         )
     else:
-        await query.message.reply_text("🚫 الملف غير متوفر حالياً")
+        await query_message.reply_text("🚫 الملف غير متوفر حالياً")
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    section = query.data
+    await send_section_pdf(query.message, section)
 
 # ========= health check =========
-async def health(request):
+async def health(_request):
     return web.Response(text="OK")
 
+def run_health_server():
+    app = web.Application()
+    app.router.add_get("/health", health)
+    # مهم: تعطيل signals لأننا داخل thread جانبي
+    web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    # شغّل health server في ثريد جانبي بدون signals
+    threading.Thread(target=run_health_server, daemon=True).start()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
+    # تيليجرام بوت
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
 
-    # aiohttp health server
-    web_app = web.Application()
-    web_app.router.add_get("/health", health)
-    import threading
-    threading.Thread(target=lambda: web.run_app(web_app, port=10000)).start()
-
-    print("✅ Bot is running...")
-    app.run_polling()
+    print(f"✅ Bot is running... Health on 0.0.0.0:{PORT}")
+    application.run_polling(close_loop=False)  # إبقِ اللوب شغّال
 
 if __name__ == "__main__":
     main()
+
