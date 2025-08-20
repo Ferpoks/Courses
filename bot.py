@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -14,9 +14,9 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
 
 ASSETS_DIR = Path("assets")
-PORT = int(os.getenv("PORT", "10000"))  # Render يوفر PORT تلقائياً
+PORT = int(os.getenv("PORT", "10000"))  # Render يمرّر متغير PORT تلقائياً
 
-# ========= واجهة المستخدم =========
+# ========= تيليجرام: Handlers =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🤖 ذكاء اصطناعي", callback_data="ai")],
@@ -31,9 +31,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.callback_query.message.reply_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-async def send_section_pdf(query_message, section: str):
+async def send_section_pdf(msg, section: str):
     file_map = {
         "ai": "courses_ai.pdf",
         "python": "courses_python.pdf",
@@ -43,41 +45,47 @@ async def send_section_pdf(query_message, section: str):
     filename = file_map.get(section, "")
     file_path = ASSETS_DIR / filename
     if file_path.exists():
-        await query_message.reply_document(
+        await msg.reply_document(
             InputFile(file_path),
             caption=f"📘 ملف {filename} — يحتوي دورات وكتب وروابط موثوقة"
         )
     else:
-        await query_message.reply_text("🚫 الملف غير متوفر حالياً")
+        await msg.reply_text("🚫 الملف غير متوفر حالياً")
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    section = query.data
-    await send_section_pdf(query.message, section)
+    q = update.callback_query
+    await q.answer()
+    await send_section_pdf(q.message, q.data)
 
-# ========= health check =========
-async def health(_request):
-    return web.Response(text="OK")
-
-def run_health_server():
-    app = web.Application()
-    app.router.add_get("/health", health)
-    # مهم: تعطيل signals لأننا داخل thread جانبي
-    web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
-
-def main():
-    # شغّل health server في ثريد جانبي بدون signals
-    threading.Thread(target=run_health_server, daemon=True).start()
-
-    # تيليجرام بوت
+def run_telegram_bot():
+    # نشغّل البوت في خيط جانبي بدون signals
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button))
 
-    print(f"✅ Bot is running... Health on 0.0.0.0:{PORT}")
-    application.run_polling(close_loop=False)  # إبقِ اللوب شغّال
+    print("🤖 Telegram bot starting (in background thread)...")
+    # مهم: تعطيل signals لأننا لسنا في الخيط الرئيسي
+    application.run_polling(stop_signals=None, close_loop=False)
+
+# ========= aiohttp Health/Web =========
+async def health(_request):
+    return web.Response(text="OK")
+
+async def root(_request):
+    return web.Response(text="Courses Bot is alive")
+
+def main():
+    # شغّل تيليجرام في خيط جانبي
+    threading.Thread(target=run_telegram_bot, daemon=True).start()
+
+    # شغّل aiohttp في الخيط الرئيسي على $PORT (حتى تلتقطه Render)
+    app = web.Application()
+    app.router.add_get("/", root)
+    app.router.add_get("/health", health)
+
+    print(f"🌐 Health server on 0.0.0.0:{PORT}")
+    # هنا signals مفعّلة افتراضياً (نحن في الخيط الرئيسي)
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
-
