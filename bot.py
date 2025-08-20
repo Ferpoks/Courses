@@ -2,8 +2,8 @@
 """
 Telegram Courses Library Bot (PTB v21.x)
 - Render-friendly: aiohttp health server on $PORT (main thread)
-- Subscription gate before use (channels/groups)
-- Admin contact button
+- Subscription gate (channels/groups) قبل الاستخدام
+- زر تواصل مع الإدارة
 """
 
 import os
@@ -14,12 +14,8 @@ from typing import List, Tuple, Union
 
 import asyncio
 from aiohttp import web
-from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-)
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
 
@@ -28,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
 
-# مثال صحيح: "@ferpokss,@Ferp0ks,-1001234567890"
+# مثال: "@ferpokss,@Ferp0ks" أو "-1001234567890"
 REQUIRED_CHANNELS = [c.strip() for c in os.getenv("REQUIRED_CHANNELS", "@ferpokss,@Ferp0ks").split(",") if c.strip()]
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "Ferp0ks").lstrip("@")
 
@@ -49,28 +45,19 @@ log = logging.getLogger("courses-bot")
 
 # ========= أدوات مساعدة =========
 def normalize_chat_id(raw: str) -> Union[int, str]:
-    """
-    يُرجِع chat_id صالحًا لـ Telegram API:
-    - إذا كان -100... نعيده int كما هو.
-    - إذا كان رقمًا/معرفًا رقميًا آخر، نُحاول تحويله إلى int.
-    - غير ذلك: نضمن وجود '@' في البداية.
-    """
     s = (raw or "").strip()
     if not s:
         return s
-    # معرّف قناة/مجموعة رقمي
+    # أرقام/آي دي
     if s.startswith("-100") or s.lstrip("-").isdigit():
         try:
             return int(s)
         except Exception:
-            return s  # نرجع خام لو فشل التحويل
-    # اسم مستخدم عام -> يجب أن يبدأ بـ @
-    if not s.startswith("@"):
-        s = "@" + s
-    return s
+            return s
+    # اسم عام → ضمن @
+    return s if s.startswith("@") else f"@{s}"
 
 def public_url_for(raw: str) -> str:
-    """ رابط عرض للقناة إذا كانت عامة. """
     s = (raw or "").lstrip("@")
     return f"https://t.me/{s}"
 
@@ -92,7 +79,6 @@ def build_main_menu() -> InlineKeyboardMarkup:
 def build_gate_keyboard(missing: List[str]) -> InlineKeyboardMarkup:
     buttons = []
     for ch in missing:
-        # حاول عرض زر فتح القناة إن كانت عامة
         if isinstance(ch, str) and not ch.startswith("-100"):
             buttons.append([InlineKeyboardButton(f"📢 اشترك في {ch.lstrip('@')}", url=public_url_for(ch))])
     buttons.append([
@@ -103,24 +89,17 @@ def build_gate_keyboard(missing: List[str]) -> InlineKeyboardMarkup:
 
 # ========= التحقق من الاشتراك =========
 async def is_member_of(chat_raw: str, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """
-    يتطلب:
-      - القنوات: أن يكون البوت "أدمن" في القناة ليمكنه فحص عضوية المستخدمين.
-      - المجموعات/السوبرجروب: أن يكون البوت عضوًا داخلها.
-    """
     chat_id = normalize_chat_id(chat_raw)
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        status = member.status
-        ok = status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER)
-        log.info(f"[membership] chat={chat_raw}→{chat_id} user={user_id} status={status} ok={ok}")
+        ok = member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER)
+        log.info(f"[membership] raw={chat_raw} norm={chat_id} user={user_id} status={member.status} ok={ok}")
         return ok
     except (BadRequest, Forbidden) as e:
-        # شائع: "Bad Request: chat not found" إذا القناة خاصة/البوت ليس أدمن/المعرف غير صحيح
-        log.warning(f"[membership] chat={chat_raw}→{chat_id} user={user_id} error={e}")
+        log.warning(f"[membership] raw={chat_raw} norm={chat_id} user={user_id} error={e}")
         return False
     except Exception as e:
-        log.error(f"[membership] unexpected chat={chat_raw}→{chat_id} user={user_id}: {e}")
+        log.error(f"[membership] unexpected raw={chat_raw} norm={chat_id} user={user_id}: {e}")
         return False
 
 async def passes_gate(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple[bool, List[str]]:
@@ -140,8 +119,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "🔒 للوصول إلى المكتبة، يلزم الاشتراك أولاً في القنوات/المجموعات التالية:\n"
             + "\n".join([f"• {m}" for m in missing]) +
-            "\n\n- تأكد أن البوت أدمن في القنوات.\n"
-            "- إذا كانت القناة خاصة استخدم رقم الآي دي (-100...).\n"
+            "\n\n- اجعل البوت أدمن في القنوات.\n"
+            "- القنوات الخاصة: استخدم رقم الآي دي بصيغة -100… في REQUIRED_CHANNELS.\n"
             "بعد الاشتراك اضغط «✅ تحقّق الاشتراك»."
         )
         await msg.reply_text(text, reply_markup=build_gate_keyboard(missing))
@@ -161,7 +140,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❗️ما زال هناك قنوات/مجموعات غير مشترَك بها أو لا يمكن الوصول لها:\n"
                 + "\n".join([f"• {m}" for m in missing]) +
                 "\n\n- تأكد أن البوت أدمن في القنوات.\n"
-                "- إذا كانت القناة خاصة استخدم رقم الآي دي (-100...).\n"
+                "- القنوات الخاصة: استخدم -100… في REQUIRED_CHANNELS.\n"
                 "ثم اضغط «✅ تحقّق الاشتراك» مجددًا."
             )
             await q.message.edit_text(text, reply_markup=build_gate_keyboard(missing))
@@ -204,7 +183,7 @@ def run_telegram_bot():
     except Exception as e:
         log.exception("❌ Telegram thread crashed: %s", e)
 
-# ========= Health/Web على $PORT في الخيط الرئيسي =========
+# ========= Health/Web =========
 async def health(_request):
     return web.Response(text="OK")
 
@@ -217,6 +196,7 @@ def main():
     app = web.Application()
     app.router.add_get("/", root)
     app.router.add_get("/health", health)
+    app.router.add_get("/healthz", health)  # ← أضفنا /healthz لـ Render
 
     log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
