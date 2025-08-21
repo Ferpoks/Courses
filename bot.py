@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Telegram Books Library Bot (PTB v21.x)
-- Render-ready: aiohttp health server on $PORT with /healthz,/health,/
-- Subscription gate قبل الاستخدام
-- 7 أقسام للكتب (قوائم مع ترقيم صفحات)، الضغط على عنصر يرسل PDF مباشرة (ملف محلي أو URL مباشر)
-- زر تواصل مع الإدارة + هاندلر أخطاء
+Telegram Books Library Bot (PTB v21.x compatible)
+- Health server على /healthz
+- شرط الاشتراك قبل الاستخدام
+- 7 أقسام للكتب، مع ترقيم صفحات
+- الضغط على عنصر يرسل PDF مباشرة (مسار محلي أو رابط مباشر)
+- هاندلر أخطاء
 """
 
 import os, json, math, asyncio, threading, logging
@@ -12,17 +13,22 @@ from pathlib import Path
 from typing import List, Tuple, Union, Dict, Any
 
 from aiohttp import web
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
 
-# ======== الإعدادات ========
+# حاول استيراد FSInputFile، وإن لم تتوفر استخدم fallback
+try:
+    from telegram import FSInputFile as _FSInputFile  # PTB >= 20
+except Exception:
+    _FSInputFile = None
+
+# ========== إعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
 
-# أمثلة: "@yourchannel" أو "-1001234567890"
 REQUIRED_CHANNELS = [c.strip() for c in os.getenv("REQUIRED_CHANNELS", "@yourchannel").split(",") if c.strip()]
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "Ferp0ks").lstrip("@")
 
@@ -30,7 +36,6 @@ ASSETS_DIR   = Path("assets")
 CATALOG_FILE = ASSETS_DIR / "catalog.json"
 PORT         = int(os.getenv("PORT", "10000"))
 
-# مفاتيح الأقسام
 SECTION_NAMES = {
     "prog":        "كتب البرمجة",
     "design":      "كتب التصميم",
@@ -40,14 +45,13 @@ SECTION_NAMES = {
     "maintenance": "كتب الصيانة",
     "office":      "كتب البرامج المكتبية",
 }
-
 PAGE_SIZE = 8
 
-# ======== Logging ========
+# ========== Logging ==========
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO)
 log = logging.getLogger("courses-bot")
 
-# ======== الكاتالوج ========
+# ========== تحميل الفهرس ==========
 def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
     data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in SECTION_NAMES}
     if CATALOG_FILE.exists():
@@ -63,13 +67,16 @@ def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
 
 CATALOG = load_catalog()
 
-# ======== أدوات ========
+# ========== أدوات ==========
 def normalize_chat_id(raw: str) -> Union[int, str]:
     s = (raw or "").strip()
-    if not s: return s
+    if not s:
+        return s
     if s.startswith("-100") or s.lstrip("-").isdigit():
-        try: return int(s)
-        except Exception: return s
+        try:
+            return int(s)
+        except Exception:
+            return s
     return s if s.startswith("@") else f"@{s}"
 
 def public_url_for(raw: str) -> str:
@@ -81,16 +88,16 @@ def trim_title(t: str, limit: int = 28) -> str:
 
 def build_main_menu() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("📘 كتب البرمجة",            callback_data="sec:prog")],
-        [InlineKeyboardButton("🎨 كتب التصميم",            callback_data="sec:design")],
-        [InlineKeyboardButton("🛡️ كتب الأمن",              callback_data="sec:security")],
-        [InlineKeyboardButton("🗣️ كتب اللغات",             callback_data="sec:languages")],
-        [InlineKeyboardButton("📈 كتب التسويق",            callback_data="sec:marketing")],
-        [InlineKeyboardButton("🛠️ كتب الصيانة",            callback_data="sec:maintenance")],
-        [InlineKeyboardButton("🗂️ كتب البرامج المكتبية",   callback_data="sec:office")],
+        [InlineKeyboardButton("📘 كتب البرمجة", callback_data="sec:prog")],
+        [InlineKeyboardButton("🎨 كتب التصميم", callback_data="sec:design")],
+        [InlineKeyboardButton("🛡️ كتب الأمن", callback_data="sec:security")],
+        [InlineKeyboardButton("🗣️ كتب اللغات", callback_data="sec:languages")],
+        [InlineKeyboardButton("📈 كتب التسويق", callback_data="sec:marketing")],
+        [InlineKeyboardButton("🛠️ كتب الصيانة", callback_data="sec:maintenance")],
+        [InlineKeyboardButton("🗂️ كتب البرامج المكتبية", callback_data="sec:office")],
         [
             InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}"),
-            InlineKeyboardButton("🔄 تحديث القائمة",   callback_data="menu"),
+            InlineKeyboardButton("🔄 تحديث القائمة", callback_data="menu"),
         ],
     ]
     return InlineKeyboardMarkup(rows)
@@ -116,7 +123,7 @@ async def safe_edit_text(msg, text: str, reply_markup: InlineKeyboardMarkup | No
         else:
             raise
 
-# ======== الاشتراك ========
+# ========== اشتراك ==========
 async def is_member_of(chat_raw: str, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = normalize_chat_id(chat_raw)
     try:
@@ -138,18 +145,19 @@ async def passes_gate(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple
             missing.append(ch if str(ch).startswith("@") or str(ch).startswith("-100") else f"@{ch}")
     return (len(missing) == 0), missing
 
-# ======== قوائم القسم ========
+# ========== قوائم القسم ==========
 def section_items(section: str) -> List[Dict[str, Any]]:
     return CATALOG.get(section, [])
 
 def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
     items = section_items(section)
-    start, end = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
     page_items = items[start:end]
 
     rows = []
     for idx, item in enumerate(page_items, start=start):
-        label = f"📄 {trim_title(item.get('title','بدون عنوان'))}"
+        label = f"📄 {trim_title(item.get('title', 'بدون عنوان'))}"
         rows.append([InlineKeyboardButton(label, callback_data=f"send:{section}:{idx}")])
 
     total_pages = max(1, math.ceil(len(items) / PAGE_SIZE)) if items else 1
@@ -167,16 +175,18 @@ def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
     ])
     return InlineKeyboardMarkup(rows)
 
-# ======== الهاندلرز ========
+# ========== الهاندلرز ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    msg  = update.message or update.callback_query.message
+    msg = update.message or update.callback_query.message
     ok, missing = await passes_gate(user.id, context)
     if not ok:
-        text = ("🔒 للوصول إلى المكتبة، يلزم الاشتراك أولاً في القنوات/المجموعات التالية:\n" +
-                "\n".join([f"• {m}" for m in missing]) +
-                "\n\n- اجعل البوت أدمن في القنوات.\n- القنوات الخاصة: استخدم آي دي بصيغة -100… في REQUIRED_CHANNELS.\n" +
-                "بعد الاشتراك اضغط «✅ تحقّق الاشتراك».")
+        text = (
+            "🔒 للوصول إلى المكتبة، يلزم الاشتراك أولاً في القنوات/المجموعات التالية:\n"
+            + "\n".join([f"• {m}" for m in missing]) +
+            "\n\n- اجعل البوت أدمن في القنوات.\n- القنوات الخاصة: استخدم آي دي بصيغة -100… في REQUIRED_CHANNELS.\n"
+            "بعد الاشتراك اضغط «✅ تحقّق الاشتراك»."
+        )
         await msg.reply_text(text, reply_markup=build_gate_keyboard(missing))
         return
     await msg.reply_text("📚 أهلاً بك! اختر قسمًا:", reply_markup=build_main_menu())
@@ -189,9 +199,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "verify":
         ok, missing = await passes_gate(q.from_user.id, context)
         if not ok:
-            text = ("❗️لا يزال هناك قنوات/مجموعات ناقصة:\n" +
-                    "\n".join([f"• {m}" for m in missing]) +
-                    "\n\n- تأكد أن البوت أدمن.\n- القنوات الخاصة: استخدم -100…\nثم اضغط «✅ تحقّق الاشتراك».")
+            text = (
+                "❗️لا يزال هناك قنوات/مجموعات ناقصة:\n"
+                + "\n".join([f"• {m}" for m in missing]) +
+                "\n\n- تأكد أن البوت أدمن.\n- القنوات الخاصة: استخدم -100…\nثم اضغط «✅ تحقّق الاشتراك»."
+            )
             await safe_edit_text(q.message, text, reply_markup=build_gate_keyboard(missing))
             return
         await safe_edit_text(q.message, "✅ تم التحقق. اختر قسمًا:", reply_markup=build_main_menu())
@@ -222,49 +234,53 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, section, idx_str = data.split(":")
         items = section_items(section)
         try:
-            idx  = int(idx_str)
+            idx = int(idx_str)
             item = items[idx]
         except Exception:
             await q.message.reply_text("⚠️ عنصر غير صالح.")
             return
 
-        # تحقق الاشتراك قبل الإرسال
+        # تحقق الاشتراك
         ok, missing = await passes_gate(q.from_user.id, context)
         if not ok:
             await q.message.reply_text("🔒 يجب الاشتراك أولاً.", reply_markup=build_gate_keyboard(missing))
             return
 
         title = item.get("title", "ملف")
-        doc: Union[str, FSInputFile, None] = None
 
         if "path" in item:
             path = Path(item["path"])
             if not path.is_absolute():
                 path = Path(item["path"]) if str(item["path"]).startswith("assets") else ASSETS_DIR / item["path"]
-            if path.exists():
-                # <-- التعديل هنا: استخدم FSInputFile
-                doc = FSInputFile(str(path))
-            else:
+            if not path.exists():
                 await q.message.reply_text(f"🚫 لم أجد الملف في السيرفر: {path}")
                 return
+
+            # إرسال الملف: استخدم FSInputFile إن وُجد، وإلا افتح الملف مباشرة
+            caption = f"📘 {title}\n🛠 تواصل مع الإدارة: @{OWNER_USERNAME}"
+            if _FSInputFile is not None:
+                await q.message.reply_document(_FSInputFile(str(path)), caption=caption)
+            else:
+                with open(path, "rb") as f:
+                    await q.message.reply_document(f, caption=caption)
+            return
+
         elif "url" in item:
-            # رابط تنزيل مباشر سيحمله تيليجرام
-            doc = item["url"]
+            caption = f"📘 {title}\n🛠 تواصل مع الإدارة: @{OWNER_USERNAME}"
+            await q.message.reply_document(item["url"], caption=caption)
+            return
+
         else:
             await q.message.reply_text("⚠️ لا يوجد path أو url لهذا العنصر.")
             return
 
-        caption = f"📘 {title}\n🛠 تواصل مع الإدارة: @{OWNER_USERNAME}"
-        await q.message.reply_document(doc, caption=caption)
-        return
-
     await q.message.reply_text("🤖 أمر غير معروف.")
 
-# ======== هاندلر أخطاء عام ========
+# ========== هاندلر أخطاء ==========
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.exception("Unhandled error: %s", context.error)
 
-# ======== تشغيل البوت (خيط جانبي) ========
+# ========== تشغيل البوت ==========
 def run_telegram_bot():
     try:
         loop = asyncio.new_event_loop()
@@ -280,7 +296,7 @@ def run_telegram_bot():
     except Exception as e:
         log.exception("❌ Telegram thread crashed: %s", e)
 
-# ======== Health/Web ========
+# ========== Health/Web ==========
 async def health_handler(_request):
     return web.Response(text="OK")
 
@@ -289,7 +305,7 @@ def main():
 
     app = web.Application()
     for p in ["/healthz", "/healthz/", "/health", "/health/", "/"]:
-        app.router.add_route("GET",  p, health_handler)
+        app.router.add_route("GET", p, health_handler)
         app.router.add_route("HEAD", p, health_handler)
 
     log.info("🌐 Health server on 0.0.0.0:%s (paths: /healthz,/health,/)", PORT)
@@ -297,4 +313,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
