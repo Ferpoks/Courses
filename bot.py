@@ -3,8 +3,8 @@
 Telegram Books Library Bot (PTB v21.x)
 - Render-ready: aiohttp health server on $PORT with /healthz,/health,/
 - Subscription gate قبل الاستخدام
-- أقسام فرعية مع ترقيم صفحات، الضغط على عنصر يرسل PDF مباشرة (ملف محلي أو URL مباشر)
-- زر تواصل مع الإدارة
+- 7 أقسام للكتب (قوائم مع ترقيم صفحات)، الضغط على عنصر يرسل PDF مباشرة (ملف محلي أو URL مباشر)
+- زر تواصل مع الإدارة + هاندلر أخطاء
 """
 
 import os, json, math, asyncio, threading, logging
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Tuple, Union, Dict, Any
 
 from aiohttp import web
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
@@ -22,6 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
 
+# أمثلة: "@yourchannel" أو "-1001234567890"
 REQUIRED_CHANNELS = [c.strip() for c in os.getenv("REQUIRED_CHANNELS", "@yourchannel").split(",") if c.strip()]
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "Ferp0ks").lstrip("@")
 
@@ -227,25 +228,28 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("⚠️ عنصر غير صالح.")
             return
 
+        # تحقق الاشتراك قبل الإرسال
         ok, missing = await passes_gate(q.from_user.id, context)
         if not ok:
             await q.message.reply_text("🔒 يجب الاشتراك أولاً.", reply_markup=build_gate_keyboard(missing))
             return
 
         title = item.get("title", "ملف")
-        doc: Union[str, InputFile, None] = None
+        doc: Union[str, FSInputFile, None] = None
 
         if "path" in item:
             path = Path(item["path"])
             if not path.is_absolute():
                 path = Path(item["path"]) if str(item["path"]).startswith("assets") else ASSETS_DIR / item["path"]
             if path.exists():
-                doc = InputFile(path)
+                # <-- التعديل هنا: استخدم FSInputFile
+                doc = FSInputFile(str(path))
             else:
                 await q.message.reply_text(f"🚫 لم أجد الملف في السيرفر: {path}")
                 return
         elif "url" in item:
-            doc = item["url"]  # رابط تنزيل مباشر
+            # رابط تنزيل مباشر سيحمله تيليجرام
+            doc = item["url"]
         else:
             await q.message.reply_text("⚠️ لا يوجد path أو url لهذا العنصر.")
             return
@@ -256,6 +260,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text("🤖 أمر غير معروف.")
 
+# ======== هاندلر أخطاء عام ========
+async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.exception("Unhandled error: %s", context.error)
+
 # ======== تشغيل البوت (خيط جانبي) ========
 def run_telegram_bot():
     try:
@@ -265,6 +273,7 @@ def run_telegram_bot():
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CallbackQueryHandler(on_button))
+        application.add_error_handler(on_error)
 
         log.info("🤖 Telegram bot starting (background thread)…")
         application.run_polling(stop_signals=None, close_loop=False)
@@ -288,3 +297,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
