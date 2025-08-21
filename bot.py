@@ -1,376 +1,326 @@
-# -*- coding: utf-8 -*-
-"""
-Telegram Books Library Bot (PTB v21.x compatible)
-- Health server على /healthz
-- شرط الاشتراك قبل الاستخدام
-- 7 أقسام للكتب + دعم مجموعات فرعية (children)
-- الضغط على عنصر يرسل PDF مباشرة (path محلي أو URL مباشر)
-- زر تواصل مع الإدارة تحت الملف + هاندلر أخطاء
-- أوامر: /reload و /check
-"""
-
-import os, json, math, asyncio, threading, logging
+# bot.py
+import os
+import json
+import asyncio
+import logging
+from threading import Thread
 from pathlib import Path
-from typing import List, Tuple, Union, Dict, Any
 
 from aiohttp import web
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from telegram.constants import ChatMemberStatus
-from telegram.error import BadRequest, Forbidden
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputFile,
+)
+from telegram.constants import ChatAction
+from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
-# حاول استيراد FSInputFile، وإن لم تتوفر استخدم fallback بالفتح اليدوي
-try:
-    from telegram import FSInputFile as _FSInputFile  # PTB >= 20
-except Exception:
-    _FSInputFile = None
-
-# ======== الإعدادات ========
-BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN مفقود")
-
-REQUIRED_CHANNELS = [c.strip() for c in os.getenv("REQUIRED_CHANNELS", "@yourchannel").split(",") if c.strip()]
-OWNER_USERNAME = os.getenv("OWNER_USERNAME", "Ferp0ks").lstrip("@")
-
-ASSETS_DIR   = Path("assets")
-CATALOG_FILE = ASSETS_DIR / "catalog.json"
-PORT         = int(os.getenv("PORT", "10000"))
-
-SECTION_NAMES = {
-    "prog":        "كتب البرمجة",
-    "design":      "كتب التصميم",
-    "security":    "كتب الأمن",
-    "languages":   "كتب اللغات",
-    "marketing":   "كتب التسويق",
-    "maintenance": "كتب الصيانة",
-    "office":      "كتب البرامج المكتبية",
-}
-
-PAGE_SIZE = 8
-
-# ======== Logging ========
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO)
+# ========= إعدادات عامة =========
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 log = logging.getLogger("courses-bot")
 
-# ======== تحميل الفهرس ========
-def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
-    """Load assets/catalog.json إلى الذاكرة مع حماية من الأخطاء."""
-    # اضمن وجود المفاتيح كلها حتى لو JSON ناقص
-    data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in SECTION_NAMES}
-    if CATALOG_FILE.exists():
-        with open(CATALOG_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)  # لو فيه خطأ صياغة سيرفع استثناء (نلتقطه في /reload)
-            for k in SECTION_NAMES:
-                if isinstance(raw.get(k), list):
-                    data[k] = raw[k]
-    return data
+TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+if not TOKEN:
+    raise SystemExit("❌ ضع TELEGRAM_TOKEN في متغيرات البيئة على Render")
+
+# قناة التحقق من الاشتراك (يمكن تعديلها من الإعدادات)
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@ferpokss").strip()  # مثال: @ferpokss
+ADMIN_USERNAME   = os.getenv("ADMIN_USERNAME", "@ferpo_ksa").strip()    # زر تواصل مع الإدارة
+
+PORT = int(os.getenv("PORT", "10000"))
+CATALOG_PATH = Path("assets/catalog.json")
+
+# أسماء الأقسام بالعربية (للواجهة) مقابل المفاتيح داخل catalog.json
+CATEGORIES = {
+    "prog":      "كتب البرمجة",
+    "design":    "كتب التصميم",
+    "security":  "كتب الأمن",
+    "languages": "كتب اللغات",
+    "marketing": "كتب التسويق",
+    "maintenance": "كتب الصيانة",
+    "office":    "كتب البرامج المكتبية",
+}
+
+# ========= تحميل الكاتالوج =========
+def load_catalog() -> dict:
+    if not CATALOG_PATH.exists():
+        log.warning("catalog.json غير موجود: %s", CATALOG_PATH)
+        return {k: [] for k in CATEGORIES.keys()}
+    with CATALOG_PATH.open("r", encoding="utf-8") as f:
+        raw = json.load(f)  # في حال وجود خطأ صياغة سيرفع استثناء
+    # تأكد من وجود جميع المفاتيح
+    for k in CATEGORIES.keys():
+        raw.setdefault(k, [])
+    return raw
 
 CATALOG = load_catalog()
 
-# ======== أدوات ========
-def normalize_chat_id(raw: str) -> Union[int, str]:
-    s = (raw or "").strip()
-    if not s: return s
-    if s.startswith("-100") or s.lstrip("-").isdigit():
-        try: return int(s)
-        except Exception: return s
-    return s if s.startswith("@") else f"@{s}"
+def human_counts() -> str:
+    lines = []
+    for key, title in CATEGORIES.items():
+        count = 0
+        for item in CATALOG.get(key, []):
+            if "children" in item:
+                count += len(item["children"])
+            else:
+                count += 1
+        lines.append(f"- {title}: {count}")
+    return "\n".join(lines)
 
-def public_url_for(raw: str) -> str:
-    return f"https://t.me/{(raw or '').lstrip('@')}"
-
-def trim_title(t: str, limit: int = 28) -> str:
-    t = t.strip()
-    return t if len(t) <= limit else t[:limit-1] + "…"
-
-def build_main_menu() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("📘 كتب البرمجة",          callback_data="sec:prog")],
-        [InlineKeyboardButton("🎨 كتب التصميم",          callback_data="sec:design")],
-        [InlineKeyboardButton("🛡️ كتب الأمن",            callback_data="sec:security")],
-        [InlineKeyboardButton("🗣️ كتب اللغات",           callback_data="sec:languages")],
-        [InlineKeyboardButton("📈 كتب التسويق",          callback_data="sec:marketing")],
-        [InlineKeyboardButton("🛠️ كتب الصيانة",          callback_data="sec:maintenance")],
-        [InlineKeyboardButton("🗂️ كتب البرامج المكتبية", callback_data="sec:office")],
-        [
-            InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}"),
-            InlineKeyboardButton("🔄 تحديث القائمة",   callback_data="menu"),
-        ],
-    ]
-    return InlineKeyboardMarkup(rows)
-
-def build_gate_keyboard(missing: List[str]) -> InlineKeyboardMarkup:
-    buttons = []
-    for ch in missing:
-        s = str(ch)
-        if not s.startswith("-100"):
-            buttons.append([InlineKeyboardButton(f"📢 اشترك في {s.lstrip('@')}", url=public_url_for(s))])
-    buttons.append([
-        InlineKeyboardButton("✅ تحقّق الاشتراك", callback_data="verify"),
-        InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")
-    ])
-    return InlineKeyboardMarkup(buttons)
-
-async def safe_edit_text(msg, text: str, reply_markup: InlineKeyboardMarkup | None = None):
+# ========= أدوات مساعدة لـ Telegram =========
+async def safe_answer_callback(q):
+    """نرد على الزر فوراً حتى لا يظهر 'Query is too old'."""
     try:
-        await msg.edit_text(text, reply_markup=reply_markup)
+        await q.answer()
     except BadRequest as e:
-        if "Message is not modified" in str(e):
-            log.info("safe_edit_text: not modified, ignoring.")
-        else:
-            raise
+        if "query is too old" in str(e).lower():
+            return
+        raise
 
-# ======== الاشتراك ========
-async def is_member_of(chat_raw: str, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    chat_id = normalize_chat_id(chat_raw)
+async def safe_edit_text(message, **kwargs):
+    """نتجنب استثناء 'Message is not modified' عند تحرير نفس النص."""
     try:
-        member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        ok = member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER)
-        log.info(f"[membership] raw={chat_raw} norm={chat_id} user={user_id} status={member.status} ok={ok}")
-        return ok
-    except (BadRequest, Forbidden) as e:
-        log.warning(f"[membership] raw={chat_raw} norm={chat_id} user={user_id} error={e}")
+        return await message.edit_text(**kwargs)
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            return
+        raise
+
+async def is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """تحقق الاشتراك في القناة المطلوبة."""
+    if not REQUIRED_CHANNEL:
+        return True
+    chat = REQUIRED_CHANNEL
+    if not chat.startswith("@") and not chat.startswith("-100"):
+        chat = "@" + chat
+    try:
+        member = await context.bot.get_chat_member(chat_id=chat, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except BadRequest as e:
+        # مثلاً: Chat not found إذا كانت القناة خاصة أو البوت ليس أدمن
+        log.warning("[membership] chat=%s user=%s error=%s", chat, user_id, e)
         return False
     except Exception as e:
-        log.error(f"[membership] unexpected raw={chat_raw} norm={chat_id} user={user_id}: {e}")
+        log.warning("[membership] unexpected: %s", e)
         return False
 
-async def passes_gate(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple[bool, List[str]]:
-    missing = []
-    for ch in REQUIRED_CHANNELS:
-        if not await is_member_of(ch, user_id, context):
-            missing.append(ch if str(ch).startswith("@") or str(ch).startswith("-100") else f"@{ch}")
-    return (len(missing) == 0), missing
+def chunks(lst, n):
+    """تقسيم الأزرار لصفوف."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i+n]
 
-# ======== القوائم ========
-def section_items(section: str) -> List[Dict[str, Any]]:
-    return CATALOG.get(section, [])
-
-def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
-    items = section_items(section)
-    start, end = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE
-    page_items = items[start:end]
-
-    rows = []
-    for idx, item in enumerate(page_items, start=start):
-        title = trim_title(item.get('title', 'بدون عنوان'))
-        if isinstance(item, dict) and "children" in item:
-            rows.append([InlineKeyboardButton(f"📁 {title}", callback_data=f"grp:{section}:{idx}:0")])
-        else:
-            rows.append([InlineKeyboardButton(f"📄 {title}", callback_data=f"send:{section}:{idx}")])
-
-    total_pages = max(1, math.ceil(len(items) / PAGE_SIZE)) if items else 1
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"page:{section}:{page-1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"page:{section}:{page+1}"))
-    if nav:
-        rows.append(nav)
-
+def main_menu_kb() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(CATEGORIES[k], callback_data=f"cat:{k}")
+        for k in CATEGORIES.keys()
+    ]
+    rows = [list(r) for r in chunks(buttons, 2)]
     rows.append([
-        InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="menu"),
-        InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")
+        InlineKeyboardButton("🔄 تحديث القائمة", callback_data="reload"),
+        InlineKeyboardButton("🛠️ تواصل مع الإدارة", url=f"https://t.me/{ADMIN_USERNAME.removeprefix('@')}"),
     ])
     return InlineKeyboardMarkup(rows)
 
-def render_group_menu(section: str, grp_idx: int, page: int = 0) -> InlineKeyboardMarkup:
-    group = section_items(section)[grp_idx]
-    children = group.get("children", [])
-    start, end = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE
-    page_children = children[start:end]
-
-    rows = []
-    for c_idx, child in enumerate(page_children, start=start):
-        rows.append([InlineKeyboardButton(f"📄 {trim_title(child.get('title','بدون عنوان'))}",
-                                          callback_data=f"sendchild:{section}:{grp_idx}:{c_idx}")])
-
-    total_pages = max(1, math.ceil(len(children) / PAGE_SIZE)) if children else 1
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"gpage:{section}:{grp_idx}:{page-1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"gpage:{section}:{grp_idx}:{page+1}"))
-    if nav:
-        rows.append(nav)
-
-    rows.append([
-        InlineKeyboardButton("🔙 رجوع للقسم", callback_data=f"sec:{section}"),
-        InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")
-    ])
+def list_category_kb(cat_key: str) -> InlineKeyboardMarkup:
+    items = CATALOG.get(cat_key, [])
+    btns = []
+    for idx, item in enumerate(items):
+        title = item.get("title", f"Item {idx+1}")
+        if item.get("children"):
+            btns.append(InlineKeyboardButton(f"📂 {title}", callback_data=f"group:{cat_key}:{idx}"))
+        else:
+            path = item.get("path", "")
+            btns.append(InlineKeyboardButton(f"📄 {title}", callback_data=f"file:{path}"))
+    rows = [list(r) for r in chunks(btns, 1)]
+    rows.append([InlineKeyboardButton("⬅️ رجوع للقائمة", callback_data="back")])
+    rows.append([InlineKeyboardButton("🛠️ تواصل مع الإدارة", url=f"https://t.me/{ADMIN_USERNAME.removeprefix('@')}")])
     return InlineKeyboardMarkup(rows)
 
-# ======== أوامر الصيانة ========
-def flatten_count(items: List[Dict[str, Any]]) -> int:
-    total = 0
-    for it in items:
-        if isinstance(it, dict) and "children" in it:
-            total += len(it.get("children", []))
-        else:
-            total += 1
-    return total
+def list_children_kb(cat_key: str, parent_idx: int) -> InlineKeyboardMarkup:
+    parent = CATALOG.get(cat_key, [])[parent_idx]
+    children = parent.get("children", [])
+    btns = []
+    for ch in children:
+        title = ch.get("title", "ملف")
+        path  = ch.get("path", "")
+        btns.append(InlineKeyboardButton(f"📄 {title}", callback_data=f"file:{path}"))
+    rows = [list(r) for r in chunks(btns, 1)]
+    rows.append([InlineKeyboardButton("⬅️ رجوع", callback_data=f"cat:{cat_key}")])
+    return InlineKeyboardMarkup(rows)
 
-def summarize_counts() -> str:
-    lines = []
-    for key, name in SECTION_NAMES.items():
-        cnt = flatten_count(CATALOG.get(key, []))
-        lines.append(f"- {name}: {cnt}")
-    return "\n".join(lines)
+# ========= الأوامر =========
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message(
+        "مرحباً بك في مكتبة الكتب والدورات 📚\nاختر قسماً:",
+        reply_markup=main_menu_kb(),
+    )
+
+async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message(f"ℹ️ حالة المحتوى:\n{human_counts()}")
 
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CATALOG
     try:
         CATALOG = load_catalog()
-        await (update.effective_message).reply_text("✅ تم إعادة تحميل الكاتالوج:\n" + summarize_counts())
+        await update.effective_chat.send_message(
+            "تم إعادة تحميل الكاتالوج ✅\n" + human_counts()
+        )
     except Exception as e:
-        await (update.effective_message).reply_text(f"❌ فشل التحميل: {e}")
+        log.exception("reload failed: %s", e)
+        await update.effective_chat.send_message(f"فشل تحديث الكاتالوج ❌\n{e}")
 
-async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await (update.effective_message).reply_text("ℹ️ حالة المحتوى:\n" + summarize_counts())
-
-# ======== الهاندلرز ========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg  = update.message or update.callback_query.message
-    ok, missing = await passes_gate(user.id, context)
-    if not ok:
-        text = ("🔒 للوصول إلى المكتبة، يلزم الاشتراك أولاً في القنوات/المجموعات التالية:\n" +
-                "\n".join([f"• {m}" for m in missing]) +
-                "\n\n- اجعل البوت أدمن في القنوات.\n- القنوات الخاصة: استخدم آي دي بصيغة -100… في REQUIRED_CHANNELS.\n" +
-                "بعد الاشتراك اضغط «✅ تحقّق الاشتراك».")
-        await msg.reply_text(text, reply_markup=build_gate_keyboard(missing))
-        return
-    await msg.reply_text("📚 أهلاً بك! اختر قسمًا:", reply_markup=build_main_menu())
-
+# ========= أزرار الإنلاين =========
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    await safe_answer_callback(q)  # ← مهم جداً
     data = q.data or ""
 
-    if data == "verify":
-        ok, missing = await passes_gate(q.from_user.id, context)
-        if not ok:
-            text = ("❗️لا يزال هناك قنوات/مجموعات ناقصة:\n" +
-                    "\n".join([f"• {m}" for m in missing]) +
-                    "\n\n- تأكد أن البوت أدمن.\n- القنوات الخاصة: استخدم -100…\nثم اضغط «✅ تحقّق الاشتراك».")
-            await safe_edit_text(q.message, text, reply_markup=build_gate_keyboard(missing))
-            return
-        await safe_edit_text(q.message, "✅ تم التحقق. اختر قسمًا:", reply_markup=build_main_menu())
+    if data == "back":
+        await safe_edit_text(q.message, text="اختر قسماً:", reply_markup=main_menu_kb())
         return
 
-    if data == "menu":
-        await safe_edit_text(q.message, "📚 القائمة الرئيسية:", reply_markup=build_main_menu())
+    if data == "reload":
+        # حدّث ثم ارجع للقائمة
+        try:
+            global CATALOG
+            CATALOG = load_catalog()
+            await safe_edit_text(
+                q.message,
+                text="تم تحديث القائمة ✅\nاختر قسماً:",
+                reply_markup=main_menu_kb(),
+            )
+        except Exception as e:
+            await q.message.reply_text(f"فشل التحديث: {e}")
         return
 
-    if data.startswith("sec:"):
-        section = data.split(":", 1)[1]
-        title = SECTION_NAMES.get(section, "قسم")
-        items = section_items(section)
+    # فتح قسم
+    if data.startswith("cat:"):
+        cat_key = data.split(":", 1)[1]
+        title = CATEGORIES.get(cat_key, "القسم")
+        items = CATALOG.get(cat_key, [])
         if not items:
-            await q.message.reply_text(f"⚠️ لا يوجد عناصر في «{title}» حالياً.")
+            await safe_edit_text(q.message, text=f"⚠️ لا يوجد عناصر في «{title}» حالياً.", reply_markup=main_menu_kb())
             return
-        await safe_edit_text(q.message, f"📂 {title} — اختر عنصرًا:", reply_markup=render_section_menu(section, 0))
+        await safe_edit_text(q.message, text=f"{title} — اختر عنصراً:", reply_markup=list_category_kb(cat_key))
         return
 
-    if data.startswith("page:"):
-        _, section, page_str = data.split(":")
-        await safe_edit_text(q.message, "📂 اختر عنصرًا:", reply_markup=render_section_menu(section, int(page_str)))
+    # مجموعة فرعية (أطفال)
+    if data.startswith("group:"):
+        _, cat_key, idx_s = data.split(":")
+        idx = int(idx_s)
+        parent = CATALOG.get(cat_key, [])[idx]
+        title = parent.get("title", "مجموعة")
+        await safe_edit_text(q.message, text=f"{CATEGORIES.get(cat_key, '')} / {title}:", reply_markup=list_children_kb(cat_key, idx))
         return
 
-    if data.startswith("grp:"):
-        _, section, grp_idx, page_str = data.split(":")
-        grp_idx, page = int(grp_idx), int(page_str)
-        group_title = section_items(section)[grp_idx].get("title", "مجموعة")
-        await safe_edit_text(q.message, f"📁 {group_title} — اختر ملفًا:", reply_markup=render_group_menu(section, grp_idx, page))
-        return
-
-    if data.startswith("gpage:"):
-        _, section, grp_idx, page_str = data.split(":")
-        grp_idx, page = int(grp_idx), int(page_str)
-        group_title = section_items(section)[grp_idx].get("title", "مجموعة")
-        await safe_edit_text(q.message, f"📁 {group_title} — اختر ملفًا:", reply_markup=render_group_menu(section, grp_idx, page))
-        return
-
-    if data.startswith("send:") or data.startswith("sendchild:"):
-        # تحقق الاشتراك قبل الإرسال
-        ok, missing = await passes_gate(q.from_user.id, context)
+    # إرسال ملف
+    if data.startswith("file:"):
+        path = data.removeprefix("file:").strip()
+        # تحقق اشتراك
+        ok = await is_member(context, q.from_user.id)
         if not ok:
-            await q.message.reply_text("🔒 يجب الاشتراك أولاً.", reply_markup=build_gate_keyboard(missing))
+            url = f"https://t.me/{REQUIRED_CHANNEL.removeprefix('@')}"
+            await q.message.reply_text(
+                f"🚫 للوصول للملفات يلزم الانضمام إلى القناة:\n{REQUIRED_CHANNEL}\nثم أعد المحاولة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 فتح القناة", url=url)]]),
+            )
             return
 
-        # جلب العنصر المطلوب
-        if data.startswith("send:"):
-            _, section, idx_str = data.split(":")
-            item = section_items(section)[int(idx_str)]
-        else:
-            _, section, grp_idx, child_idx = data.split(":")
-            item = section_items(section)[int(grp_idx)]["children"][int(child_idx)]
-
-        # كيبورد تحت الملف (زر الإدارة + رجوع)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")],
-            [InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="menu")]
-        ])
-
-        # إرسال
-        if "path" in item:
-            path = Path(item["path"])
-            if not path.is_absolute():
-                path = Path(item["path"]) if str(item["path"]).startswith("assets") else ASSETS_DIR / item["path"]
-            if not path.exists():
-                await q.message.reply_text(f"🚫 لم أجد الملف في السيرفر: {path}")
-                return
-            if _FSInputFile is not None:
-                await q.message.reply_document(_FSInputFile(str(path)), reply_markup=kb)   # بدون كابتشن
-            else:
-                with open(path, "rb") as f:
-                    await q.message.reply_document(f, reply_markup=kb)
+        fs_path = Path(path)
+        if not fs_path.exists():
+            await q.message.reply_text(f"لم أجد الملف في السيرفر: {path} 🚫")
             return
 
-        if "url" in item:
-            await q.message.reply_document(item["url"], reply_markup=kb)  # بدون كابتشن
-            return
-
-        await q.message.reply_text("⚠️ لا يوجد path أو url لهذا العنصر.")
+        # إظهار حالة رفع
+        await q.message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
+        # اسم الملف من آخر جزء في المسار
+        display_name = fs_path.name
+        try:
+            await q.message.reply_document(
+                document=InputFile(fs_path),
+                caption="",  # بدون جُمل إضافية، بناءً على طلبك
+                filename=display_name,
+            )
+        except (NetworkError, TimedOut):
+            # إعادة محاولة واحدة
+            await asyncio.sleep(1)
+            await q.message.reply_document(
+                document=InputFile(fs_path),
+                caption="",
+                filename=display_name,
+            )
         return
 
-    await q.message.reply_text("🤖 أمر غير معروف.")
+# ========= Error Handler عام =========
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    err = context.error
+    text = str(err).lower() if err else ""
+    # أخطاء نتجاهلها
+    ignorable = (
+        isinstance(err, BadRequest)
+        and ("query is too old" in text or "not modified" in text)
+    )
+    if ignorable:
+        log.warning("Ignored BadRequest: %s", err)
+        return
+    log.exception("Unhandled exception: %s", err)
 
-# ======== هاندلر أخطاء ========
-async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log.exception("Unhandled error: %s", context.error)
+# ========= خادم الصحّة لِـ Render =========
+async def healthz(_request):
+    return web.Response(text="ok")
 
-# ======== تشغيل البوت ========
-def run_telegram_bot():
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        application = Application.builder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("reload", cmd_reload))   # إعادة تحميل الكاتالوج
-        application.add_handler(CommandHandler("check",  cmd_check))    # عرض أعداد العناصر
-        application.add_handler(CallbackQueryHandler(on_button))
-        application.add_error_handler(on_error)
-        log.info("🤖 Telegram bot starting (background thread)…")
-        log.info("📦 Catalog on start:\n%s", summarize_counts())
-        application.run_polling(stop_signals=None, close_loop=False)
-    except Exception as e:
-        log.exception("❌ Telegram thread crashed: %s", e)
-
-# ======== Health/Web ========
-async def health_handler(_request):
-    return web.Response(text="OK")
-
-def main():
-    threading.Thread(target=run_telegram_bot, daemon=True).start()
+def run_health_server():
     app = web.Application()
-    for p in ["/healthz", "/healthz/", "/health", "/health/", "/"]:
-        app.router.add_route("GET",  p, health_handler)
-        app.router.add_route("HEAD", p, health_handler)
-    log.info("🌐 Health server on 0.0.0.0:%s (paths: /healthz,/health,/)", PORT)
+    app.router.add_get("/", healthz)
+    app.router.add_get("/health", healthz)
+    app.router.add_get("/healthz", healthz)
+    # مهم: handle_signals=False لأننا نشغّله في Thread
     web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
+
+# ========= التشغيل =========
+def main():
+    # شغّل خادم الصحّة في Thread منفصل
+    Thread(target=run_health_server, daemon=True).start()
+    log.info("🌐 Health server on 0.0.0.0:%s (paths: /healthz,/health,/)", PORT)
+
+    # Telegram App
+    application: Application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # أوامر
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("check", cmd_check))
+    application.add_handler(CommandHandler("reload", cmd_reload))
+    application.add_handler(CallbackQueryHandler(on_button))
+
+    # فلتر أي رسالة نصية لمساعدة المستخدم
+    application.add_handler(MessageHandler(filters.COMMAND, cmd_start))
+
+    # Error handler
+    application.add_error_handler(on_error)
+
+    log.info("🤖 Telegram bot starting…")
+    application.run_polling(
+        drop_pending_updates=True,   # ← يمنع التحديثات القديمة بعد الريستارت
+        stop_signals=None,
+        close_loop=False,
+    )
 
 if __name__ == "__main__":
     main()
-
