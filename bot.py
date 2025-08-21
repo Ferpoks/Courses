@@ -4,14 +4,13 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 from aiohttp import web
 from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    FSInputFile,
 )
 from telegram.ext import (
     Application,
@@ -35,13 +34,14 @@ CATALOG_PATH = BASE_DIR / "assets" / "catalog.json"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
 OWNER_USERNAME = (os.getenv("OWNER_USERNAME") or "").lstrip("@")
-REQUIRED_CHANNELS = [c.strip().lstrip("@").lower() for c in (os.getenv("REQUIRED_CHANNELS") or "").split(",") if c.strip()]
+REQUIRED_CHANNELS = [c.strip().lstrip("@").lower()
+                     for c in (os.getenv("REQUIRED_CHANNELS") or "").split(",")
+                     if c.strip()]
 
 if not TELEGRAM_TOKEN:
     print("❌ ضع TELEGRAM_TOKEN في متغيرات البيئة على Render")
     raise SystemExit(1)
 
-# أسماء الأقسام للواجهة
 SECTION_TITLES = {
     "prog": "كتب البرمجة 💻",
     "design": "كتب التصميم 🎨",
@@ -62,7 +62,6 @@ def load_catalog() -> Catalog:
         return {k: [] for k in SECTION_TITLES.keys()}
     with CATALOG_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    # تطبيع المفاتيح المفقودة
     for k in SECTION_TITLES.keys():
         data.setdefault(k, [])
     return data
@@ -84,32 +83,27 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
     for key, title in SECTION_TITLES.items():
         rows.append([InlineKeyboardButton(title, callback_data=f"cat:{key}")])
-    rows.append([
-        InlineKeyboardButton("🛠️ تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}") if OWNER_USERNAME else InlineKeyboardButton("🛠️ الإدارة", callback_data="noop")
-    ])
+    if OWNER_USERNAME:
+        rows.append([InlineKeyboardButton("🛠️ تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")])
     return InlineKeyboardMarkup(rows)
 
-def back_row() -> List[InlineKeyboardButton]:
+def back_row():
     return [InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="back:root")]
 
 async def is_member(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """يتحقق من عضوية المستخدم في القنوات المطلوبة. إذا لم تُضبط قنوات، يسمح للجميع."""
     if not REQUIRED_CHANNELS:
         return True
     try:
         for ch in REQUIRED_CHANNELS:
-            # يجب أن يكون البوت مشرفًا في القناة العامة حتى يعمل هذا
             member = await context.bot.get_chat_member(f"@{ch}", user_id)
             if member.status in ("creator", "administrator", "member"):
                 continue
             return False
         return True
     except BadRequest as e:
-        # Chat not found أو القناة خاصّة → أبلغ فقط ولا امنع
-        log.warning("[membership] %s", e)
+        log.warning("[membership] %s", e)  # قناة خاصة أو البوت ليس مشرفاً
         return True
     except Forbidden:
-        # البوت ليس مشرفًا → لا نمنع
         return True
     except Exception as e:
         log.exception("[membership] unexpected: %s", e)
@@ -118,7 +112,10 @@ async def is_member(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
 # ==== Handlers ===============================================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text("مرحبًا بك في مكتبة الكورسات 📚\nاختر القسم المطلوب:", reply_markup=main_menu_kb())
+        await update.message.reply_text(
+            "مرحبًا بك في مكتبة الكورسات 📚\nاختر القسم المطلوب:",
+            reply_markup=main_menu_kb()
+        )
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
@@ -139,7 +136,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     if not q:
         return
-    # بعض الأحيان تيليجرام يعيد "Query is too old"؛ نتجاهل الخطأ بهدوء
     try:
         await q.answer()
     except Exception:
@@ -150,20 +146,24 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         key = data.split(":", 1)[1]
         items = CATALOG.get(key, [])
         if not items:
-            await q.message.edit_text(f"⚠️ لا يوجد عناصر في «{SECTION_TITLES.get(key, key)}» حاليًا.", reply_markup=InlineKeyboardMarkup([back_row()]))
+            await q.message.edit_text(
+                f"⚠️ لا يوجد عناصر في «{SECTION_TITLES.get(key, key)}» حاليًا.",
+                reply_markup=InlineKeyboardMarkup([back_row()])
+            )
             return
 
-        # قائمة الكتب/الدورات (مع دعم عناصر فرعية children)
-        buttons: List[List[InlineKeyboardButton]] = []
+        buttons = []
         for idx, item in enumerate(items):
             title = item.get("title", f"عنصر {idx+1}")
             if "children" in item:
                 buttons.append([InlineKeyboardButton(f"📁 {title}", callback_data=f"sub:{key}:{idx}")])
             else:
                 buttons.append([InlineKeyboardButton(title, callback_data=f"doc:{key}:{idx}")])
-
         buttons.append(back_row())
-        await q.message.edit_text(f"{SECTION_TITLES.get(key, key)} – اختر عنصرًا:", reply_markup=InlineKeyboardMarkup(buttons))
+        await q.message.edit_text(
+            f"{SECTION_TITLES.get(key, key)} – اختر عنصرًا:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
 
     if data.startswith("sub:"):
@@ -183,23 +183,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data.startswith("docsub:"):
         _, key, pidx, cidx = data.split(":", 3)
         item = CATALOG.get(key, [])[int(pidx)]["children"][int(cidx)]
-        await send_document_flow(q, context, item, section_key=key, parent_back=True)
+        await send_document_flow(q, context, item, section_key=key)
         return
 
     if data.startswith("doc:"):
         _, key, idx = data.split(":", 2)
         item = CATALOG.get(key, [])[int(idx)]
-        await send_document_flow(q, context, item, section_key=key, parent_back=False)
+        await send_document_flow(q, context, item, section_key=key)
         return
 
-    if data.startswith("back:root"):
+    if data == "back:root":
         await q.message.edit_text("اختر القسم المطلوب:", reply_markup=main_menu_kb())
-        return
 
-    # no-op
-    return
-
-async def send_document_flow(q, context: ContextTypes.DEFAULT_TYPE, item: Dict[str, Any], section_key: str, parent_back: bool) -> None:
+async def send_document_flow(q, context: ContextTypes.DEFAULT_TYPE, item: Dict[str, Any], section_key: str) -> None:
     user = q.from_user
     ok = True
     if OWNER_USERNAME and user.username and user.username.lower() == OWNER_USERNAME.lower():
@@ -208,8 +204,7 @@ async def send_document_flow(q, context: ContextTypes.DEFAULT_TYPE, item: Dict[s
         ok = await is_member(user.id, context)
 
     if not ok:
-        text = "🔒 يشترط الاشتراك في القنوات المطلوبة لاستخدام البوت."
-        await q.message.reply_text(text)
+        await q.message.reply_text("🔒 يشترط الاشتراك في القنوات المطلوبة لاستخدام البوت.")
         return
 
     path = item.get("path")
@@ -224,10 +219,9 @@ async def send_document_flow(q, context: ContextTypes.DEFAULT_TYPE, item: Dict[s
         return
 
     try:
-        await q.message.reply_document(
-            document=FSInputFile(abs_path),
-            caption=title,
-        )
+        # استخدام فتح الملف مباشرةً — يعمل مع كل إصدارات المكتبة
+        with open(abs_path, "rb") as f:
+            await q.message.reply_document(document=f, caption=title)
     except BadRequest as e:
         log.warning("send_document bad request: %s", e)
         await q.message.reply_text(f"تعذر إرسال الملف: {e}")
@@ -235,10 +229,7 @@ async def send_document_flow(q, context: ContextTypes.DEFAULT_TYPE, item: Dict[s
         log.exception("send_document error: %s", e)
         await q.message.reply_text("حدث خطأ غير متوقع أثناء إرسال الملف.")
 
-    # زر الرجوع بعد الإرسال
     kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{section_key}")]]
-        if not parent_back else
         [[InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{section_key}")]]
     )
     try:
@@ -261,25 +252,19 @@ def run_health_server():
 
 # ==== Main ===================================================================
 def main():
-    # نشغّل خادم الصحة في ثريد منفصل
     import threading
     threading.Thread(target=run_health_server, daemon=True).start()
     log.info("🌐 Health server on 0.0.0.0:%s (paths: /healthz,/health,/)", os.getenv("PORT", "10000"))
 
+    log.info("🤖 Telegram bot starting…")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # الأوامر
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("check", cmd_check))
     application.add_handler(CommandHandler("reload", cmd_reload))
-
-    # الأزرار
     application.add_handler(CallbackQueryHandler(on_button))
-
-    # تجاهل أي رسائل نصية عادية
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, lambda u, c: None))
 
-    # تشغيل البوت — بلا إشارات نظام حتى لا نصطدم بالـ thread (stop_signals=None)
     application.run_polling(
         stop_signals=None,
         close_loop=False,
