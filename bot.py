@@ -1,15 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Telegram Courses Library Bot (PTB v21.x)
-- Render: aiohttp health server on $PORT with /healthz,/health,/
+Telegram Books Library Bot (PTB v21.x)
+- Render-ready: aiohttp health server on $PORT with /healthz,/health,/
 - Subscription gate قبل الاستخدام
-- 7 أقسام للكتب (قوائم مع ترقيم صفحات)، الضغط على عنصر يرسل PDF مباشرة
+- أقسام فرعية مع ترقيم صفحات، الضغط على عنصر يرسل PDF مباشرة (ملف محلي أو URL مباشر)
 - زر تواصل مع الإدارة
-
-Environment (Render):
-  BOT_TOKEN=...
-  OWNER_USERNAME=Ferp0ks        (بدون @)
-  REQUIRED_CHANNELS=@yourchannel (عام) أو -100xxxxxxxxxx (خاص)
 """
 
 import os, json, math, asyncio, threading, logging
@@ -22,7 +17,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
 
-# ========== إعدادات أساسية ==========
+# ======== الإعدادات ========
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN مفقود")
@@ -34,31 +29,30 @@ ASSETS_DIR   = Path("assets")
 CATALOG_FILE = ASSETS_DIR / "catalog.json"
 PORT         = int(os.getenv("PORT", "10000"))
 
-# مفاتيح الأقسام (ثابتة للاستخدام في الكولباك والكاتالوج)
+# مفاتيح الأقسام
 SECTION_NAMES = {
-    "prog":       "كتب البرمجة",
-    "design":     "كتب التصميم",
-    "security":   "كتب الأمن",
-    "languages":  "كتب اللغات",
-    "marketing":  "كتب التسويق",
-    "maintenance":"كتب الصيانة",
-    "office":     "كتب البرامج المكتبية",
+    "prog":        "كتب البرمجة",
+    "design":      "كتب التصميم",
+    "security":    "كتب الأمن",
+    "languages":   "كتب اللغات",
+    "marketing":   "كتب التسويق",
+    "maintenance": "كتب الصيانة",
+    "office":      "كتب البرامج المكتبية",
 }
 
-PAGE_SIZE = 8  # عناصر في كل صفحة
+PAGE_SIZE = 8
 
-# ========== لوجينغ ==========
+# ======== Logging ========
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO)
 log = logging.getLogger("courses-bot")
 
-# ========== تحميل الفهرس ==========
+# ======== الكاتالوج ========
 def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
     data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in SECTION_NAMES}
     if CATALOG_FILE.exists():
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
             try:
                 raw = json.load(f)
-                # اقبل أي مفاتيح موجودة وطابقها، وأبقِ غير المذكور فارغًا
                 for k in SECTION_NAMES:
                     if isinstance(raw.get(k), list):
                         data[k] = raw[k]
@@ -68,11 +62,10 @@ def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
 
 CATALOG = load_catalog()
 
-# ========== أدوات مساعدة ==========
+# ======== أدوات ========
 def normalize_chat_id(raw: str) -> Union[int, str]:
     s = (raw or "").strip()
-    if not s:
-        return s
+    if not s: return s
     if s.startswith("-100") or s.lstrip("-").isdigit():
         try: return int(s)
         except Exception: return s
@@ -87,16 +80,16 @@ def trim_title(t: str, limit: int = 28) -> str:
 
 def build_main_menu() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("📘 كتب البرمجة", callback_data="sec:prog")],
-        [InlineKeyboardButton("🎨 كتب التصميم", callback_data="sec:design")],
-        [InlineKeyboardButton("🛡️ كتب الأمن", callback_data="sec:security")],
-        [InlineKeyboardButton("🗣️ كتب اللغات", callback_data="sec:languages")],
-        [InlineKeyboardButton("📈 كتب التسويق", callback_data="sec:marketing")],
-        [InlineKeyboardButton("🛠️ كتب الصيانة", callback_data="sec:maintenance")],
-        [InlineKeyboardButton("🗂️ كتب البرامج المكتبية", callback_data="sec:office")],
+        [InlineKeyboardButton("📘 كتب البرمجة",            callback_data="sec:prog")],
+        [InlineKeyboardButton("🎨 كتب التصميم",            callback_data="sec:design")],
+        [InlineKeyboardButton("🛡️ كتب الأمن",              callback_data="sec:security")],
+        [InlineKeyboardButton("🗣️ كتب اللغات",             callback_data="sec:languages")],
+        [InlineKeyboardButton("📈 كتب التسويق",            callback_data="sec:marketing")],
+        [InlineKeyboardButton("🛠️ كتب الصيانة",            callback_data="sec:maintenance")],
+        [InlineKeyboardButton("🗂️ كتب البرامج المكتبية",   callback_data="sec:office")],
         [
             InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}"),
-            InlineKeyboardButton("🔄 تحديث القائمة", callback_data="menu"),
+            InlineKeyboardButton("🔄 تحديث القائمة",   callback_data="menu"),
         ],
     ]
     return InlineKeyboardMarkup(rows)
@@ -122,7 +115,7 @@ async def safe_edit_text(msg, text: str, reply_markup: InlineKeyboardMarkup | No
         else:
             raise
 
-# ========== اشتراك ==========
+# ======== الاشتراك ========
 async def is_member_of(chat_raw: str, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = normalize_chat_id(chat_raw)
     try:
@@ -144,14 +137,13 @@ async def passes_gate(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple
             missing.append(ch if str(ch).startswith("@") or str(ch).startswith("-100") else f"@{ch}")
     return (len(missing) == 0), missing
 
-# ========== قوائم القسم ==========
+# ======== قوائم القسم ========
 def section_items(section: str) -> List[Dict[str, Any]]:
     return CATALOG.get(section, [])
 
 def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
     items = section_items(section)
-    start = page * PAGE_SIZE
-    end   = start + PAGE_SIZE
+    start, end = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE
     page_items = items[start:end]
 
     rows = []
@@ -159,7 +151,6 @@ def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
         label = f"📄 {trim_title(item.get('title','بدون عنوان'))}"
         rows.append([InlineKeyboardButton(label, callback_data=f"send:{section}:{idx}")])
 
-    # تنقل
     total_pages = max(1, math.ceil(len(items) / PAGE_SIZE)) if items else 1
     nav = []
     if page > 0:
@@ -175,7 +166,7 @@ def render_section_menu(section: str, page: int = 0) -> InlineKeyboardMarkup:
     ])
     return InlineKeyboardMarkup(rows)
 
-# ========== الهاندلرز ==========
+# ======== الهاندلرز ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg  = update.message or update.callback_query.message
@@ -236,7 +227,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("⚠️ عنصر غير صالح.")
             return
 
-        # تحقق الاشتراك مرة أخرى
         ok, missing = await passes_gate(q.from_user.id, context)
         if not ok:
             await q.message.reply_text("🔒 يجب الاشتراك أولاً.", reply_markup=build_gate_keyboard(missing))
@@ -248,7 +238,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "path" in item:
             path = Path(item["path"])
             if not path.is_absolute():
-                # لو أعطيت path نسبي بدون "assets/" نقحمه داخله
                 path = Path(item["path"]) if str(item["path"]).startswith("assets") else ASSETS_DIR / item["path"]
             if path.exists():
                 doc = InputFile(path)
@@ -256,7 +245,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_text(f"🚫 لم أجد الملف في السيرفر: {path}")
                 return
         elif "url" in item:
-            doc = item["url"]  # تيليجرام يسحبه مباشرة كرابط تنزيل مباشر
+            doc = item["url"]  # رابط تنزيل مباشر
         else:
             await q.message.reply_text("⚠️ لا يوجد path أو url لهذا العنصر.")
             return
@@ -267,7 +256,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text("🤖 أمر غير معروف.")
 
-# ========== تشغيل بوت تيليجرام (خيط جانبي) ==========
+# ======== تشغيل البوت (خيط جانبي) ========
 def run_telegram_bot():
     try:
         loop = asyncio.new_event_loop()
@@ -282,7 +271,7 @@ def run_telegram_bot():
     except Exception as e:
         log.exception("❌ Telegram thread crashed: %s", e)
 
-# ========== Health/Web ==========
+# ======== Health/Web ========
 async def health_handler(_request):
     return web.Response(text="OK")
 
@@ -299,4 +288,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
