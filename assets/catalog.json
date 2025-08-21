@@ -6,63 +6,6 @@
   "marketing": [],
   "maintenance": [],
   "office": [
-    { "title": "شرح الاكسل خطوة بخطوة", "path": "assets/office/شرح الاكسل خطوة بخطوة.pdf" }
-  ]
-}
-{
-  "prog": [
-    { "title": "تصميم الالعاب بواسطة يونتي", "path": "assets/prog/unity_game_design.pdf" },
-    { "title": "PHP_and_MySQL", "path": "assets/prog/PHP_and_MySQL.pdf" },
-    { "title": "خطوة بخطوة للبرمجة بلغة C and C++", "path": "assets/prog/c_and_cpp_step_by_step.pdf" },
-    { "title": "كن خبيرا في C#", "path": "assets/prog/csharp_expert.pdf" },
-    { "title": "البرمجة بلغة C", "path": "assets/prog/c_language_programming.pdf" },
-    { "title": "المرجع الكامل لتعلم HTML5", "path": "assets/prog/html5_complete_reference.pdf" },
-    { "title": "Javascript للمبتدئين", "path": "assets/prog/javascript_for_beginners.pdf" },
-    { "title": "علوم الحاسوب من الالف الى الياء", "path": "assets/prog/computer_science_from_a_to_z.pdf" },
-    { "title": "200 نصيحة في بايثون وعلم البيانات", "path": "assets/prog/200_python_data_tips.pdf" },
-    { "title": "512 سؤال وجواب في التعلم الالي والتعلم العميق وعلم البيانات", "path": "assets/prog/512_ml_dl_ds_qna.pdf" },
-    { "title": "التعلم العميق", "path": "assets/prog/deep_learning.pdf" }
-  ],
-  "design": [
-    { "title": "دليلك الى تصميم الهويات التجاريه المتميزه", "path": "assets/design/brand_identity_guide.pdf" },
-    { "title": "اساسيات تصميم الرسوميات", "path": "assets/design/graphics_design_basics.pdf" },
-    { "title": "تصميم الشعارات (شعارات جاهزة)", "path": "assets/design/logo_design_templates.pdf" }
-  ],
-  "security": [
-    { "title": "الذكاء الاصطناعي للهاتف", "path": "assets/security/ai_for_mobile.pdf" },
-    { "title": "نظام التشغيل Kali linux", "path": "assets/security/kali_linux_os.pdf" },
-    { "title": "اخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
-    { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
-    { "title": "تعلم لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
-
-    { "title": "الهكر الاخلاقي", "children": [
-      { "title": "الجزء 1", "path": "assets/security/ethical_hacking_part1.pdf" },
-      { "title": "الجزء 2", "path": "assets/security/ethical_hacking_part2.pdf" },
-      { "title": "الجزء 3", "path": "assets/security/ethical_hacking_part3.pdf" },
-      { "title": "الجزء 4", "path": "assets/security/ethical_hacking_part4.pdf" }
-    ]},
-
-    { "title": "البرمجة بلغة C", "path": "assets/security/c_language_programming.pdf" },
-    { "title": "اختراق تطبيقات الويب", "path": "assets/security/web_app_hacking.pdf" }
-  ],
-  "languages": [
-    { "title": "اكثر 100 محادثة استخداما للغه الانجليزية", "path": "assets/languages/100_english_conversations.pdf" },
-    { "title": "تكلم الانجليزية في 10 ايام بدون معلم", "path": "assets/languages/speak_english_in_10_days.pdf" },
-    { "title": "تعلم الانجليزية المستوى الاول", "path": "assets/languages/english_level_1.pdf" }
-  ],
-  "marketing": [
-    { "title": "طريقك للعمل الحر عبر الانترنت", "path": "assets/marketing/freelancing_guide.pdf" },
-    { "title": "التوظيف عن بعد", "path": "assets/marketing/remote_work.pdf" },
-    { "title": "دليلك المختصر لبيع المنتجات الرقمية", "path": "assets/marketing/sell_digital_products_guide.pdf" },
-    { "title": "دليلك الى تحسين محركات البحث SEO", "path": "assets/marketing/seo_guide.pdf" },
-    { "title": "جميع المصطلحات التسويقية", "path": "assets/marketing/marketing_terms.pdf" }
-  ],
-  "maintenance": [
-    { "title": "صيانة الجوال (الخصائص والمكونات)", "path": "assets/maintenance/mobile_maintenance_components.pdf" },
-    { "title": "اساسيات صيانة الجوال", "path": "assets/maintenance/mobile_maintenance_basics.pdf" },
-    { "title": "ورشة صيانة اجهزة الجوالات", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
-  ],
-  "office": [
     { "title": "excel", "path": "assets/office/excel.pdf" },
     { "title": "كتاب كامل في تعلم Microsoft Word", "path": "assets/office/microsoft_word_full.pdf" }
   ]
