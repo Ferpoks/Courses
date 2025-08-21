@@ -5,7 +5,7 @@ Telegram Books Library Bot (PTB v21.x compatible)
 - شرط الاشتراك قبل الاستخدام
 - 7 أقسام للكتب، مع ترقيم صفحات
 - الضغط على عنصر يرسل PDF مباشرة (مسار محلي أو رابط مباشر)
-- هاندلر أخطاء
+- زر تواصل مع الإدارة تحت الملف + هاندلر أخطاء
 """
 
 import os, json, math, asyncio, threading, logging
@@ -246,7 +246,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("🔒 يجب الاشتراك أولاً.", reply_markup=build_gate_keyboard(missing))
             return
 
-        title = item.get("title", "ملف")
+        # كيبورد تحت الملف (زر الإدارة + رجوع)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛠 تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")],
+            [InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="menu")]
+        ])
 
         if "path" in item:
             path = Path(item["path"])
@@ -256,18 +260,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_text(f"🚫 لم أجد الملف في السيرفر: {path}")
                 return
 
-            # إرسال الملف: استخدم FSInputFile إن وُجد، وإلا افتح الملف مباشرة
-            caption = f"📘 {title}\n🛠 تواصل مع الإدارة: @{OWNER_USERNAME}"
+            # أرسل بدون كابتشن + كيبورد
             if _FSInputFile is not None:
-                await q.message.reply_document(_FSInputFile(str(path)), caption=caption)
+                await q.message.reply_document(_FSInputFile(str(path)), reply_markup=kb)
             else:
                 with open(path, "rb") as f:
-                    await q.message.reply_document(f, caption=caption)
+                    await q.message.reply_document(f, reply_markup=kb)
             return
 
         elif "url" in item:
-            caption = f"📘 {title}\n🛠 تواصل مع الإدارة: @{OWNER_USERNAME}"
-            await q.message.reply_document(item["url"], caption=caption)
+            await q.message.reply_document(item["url"], reply_markup=kb)  # بدون كابتشن
             return
 
         else:
