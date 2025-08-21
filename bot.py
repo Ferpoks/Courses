@@ -6,6 +6,7 @@ Telegram Books Library Bot (PTB v21.x compatible)
 - 7 أقسام للكتب + دعم مجموعات فرعية (children)
 - الضغط على عنصر يرسل PDF مباشرة (path محلي أو URL مباشر)
 - زر تواصل مع الإدارة تحت الملف + هاندلر أخطاء
+- أوامر: /reload و /check
 """
 
 import os, json, math, asyncio, threading, logging
@@ -54,16 +55,15 @@ log = logging.getLogger("courses-bot")
 
 # ======== تحميل الفهرس ========
 def load_catalog() -> Dict[str, List[Dict[str, Any]]]:
+    """Load assets/catalog.json إلى الذاكرة مع حماية من الأخطاء."""
+    # اضمن وجود المفاتيح كلها حتى لو JSON ناقص
     data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in SECTION_NAMES}
     if CATALOG_FILE.exists():
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
-            try:
-                raw = json.load(f)
-                for k in SECTION_NAMES:
-                    if isinstance(raw.get(k), list):
-                        data[k] = raw[k]
-            except Exception as e:
-                log.exception("Invalid catalog.json: %s", e)
+            raw = json.load(f)  # لو فيه خطأ صياغة سيرفع استثناء (نلتقطه في /reload)
+            for k in SECTION_NAMES:
+                if isinstance(raw.get(k), list):
+                    data[k] = raw[k]
     return data
 
 CATALOG = load_catalog()
@@ -201,6 +201,34 @@ def render_group_menu(section: str, grp_idx: int, page: int = 0) -> InlineKeyboa
     ])
     return InlineKeyboardMarkup(rows)
 
+# ======== أوامر الصيانة ========
+def flatten_count(items: List[Dict[str, Any]]) -> int:
+    total = 0
+    for it in items:
+        if isinstance(it, dict) and "children" in it:
+            total += len(it.get("children", []))
+        else:
+            total += 1
+    return total
+
+def summarize_counts() -> str:
+    lines = []
+    for key, name in SECTION_NAMES.items():
+        cnt = flatten_count(CATALOG.get(key, []))
+        lines.append(f"- {name}: {cnt}")
+    return "\n".join(lines)
+
+async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CATALOG
+    try:
+        CATALOG = load_catalog()
+        await (update.effective_message).reply_text("✅ تم إعادة تحميل الكاتالوج:\n" + summarize_counts())
+    except Exception as e:
+        await (update.effective_message).reply_text(f"❌ فشل التحميل: {e}")
+
+async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await (update.effective_message).reply_text("ℹ️ حالة المحتوى:\n" + summarize_counts())
+
 # ======== الهاندلرز ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -272,15 +300,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # جلب العنصر المطلوب
-        item = None
         if data.startswith("send:"):
             _, section, idx_str = data.split(":")
             item = section_items(section)[int(idx_str)]
         else:
             _, section, grp_idx, child_idx = data.split(":")
             item = section_items(section)[int(grp_idx)]["children"][int(child_idx)]
-
-        title = item.get("title", "ملف")
 
         # كيبورد تحت الملف (زر الإدارة + رجوع)
         kb = InlineKeyboardMarkup([
@@ -304,7 +329,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if "url" in item:
-            await q.message.reply_document(item["url"], reply_markup=kb)
+            await q.message.reply_document(item["url"], reply_markup=kb)  # بدون كابتشن
             return
 
         await q.message.reply_text("⚠️ لا يوجد path أو url لهذا العنصر.")
@@ -323,9 +348,12 @@ def run_telegram_bot():
         asyncio.set_event_loop(loop)
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("reload", cmd_reload))   # إعادة تحميل الكاتالوج
+        application.add_handler(CommandHandler("check",  cmd_check))    # عرض أعداد العناصر
         application.add_handler(CallbackQueryHandler(on_button))
         application.add_error_handler(on_error)
         log.info("🤖 Telegram bot starting (background thread)…")
+        log.info("📦 Catalog on start:\n%s", summarize_counts())
         application.run_polling(stop_signals=None, close_loop=False)
     except Exception as e:
         log.exception("❌ Telegram thread crashed: %s", e)
@@ -344,5 +372,5 @@ def main():
     web.run_app(app, host="0.0.0.0", port=PORT, handle_signals=False)
 
 if __name__ == "__main__":
-    main() 
-    
+    main()
+
