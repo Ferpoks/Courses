@@ -1,30 +1,33 @@
 {
   "prog": [
-    { "title": "تصميم الألعاب بواسطة يونيتي", "path": "assets/prog/unity_game_design.pdf" },
-    { "title": "PHP and MySQL", "path": "assets/prog/PHP_and_MySQL.pdf" },
+    { "title": "تصميم ألعاب Unity", "path": "assets/prog/unity_game_design.pdf" },
+    { "title": "PHP و MySQL", "path": "assets/prog/PHP_and_MySQL.pdf" },
     { "title": "C و C++ خطوة بخطوة", "path": "assets/prog/c_and_cpp_step_by_step.pdf" },
-    { "title": "C# كن خبيراً", "path": "assets/prog/csharp_expert.pdf" },
-    { "title": "لغة برمجة عامة", "path": "assets/prog/language_programming.pdf" },
-    { "title": "HTML5 المرجع الكامل", "path": "assets/prog/html5_complete_guide.pdf" },
-    { "title": "Javascript للمبتدئين", "path": "assets/prog/Javascript.For.Beginners.pdf" },
+    { "title": "خبير المسار المهني", "path": "assets/prog/career_expert.pdf" },
+    { "title": "مدخل إلى لغات البرمجة", "path": "assets/prog/language_programming.pdf" },
+    { "title": "الرياضيات الكاملة للمبرمج", "path": "assets/prog/maths_complete_guide.pdf" },
+    { "title": "جافاسكربت للمبتدئين", "path": "assets/prog/javascript_for_beginners.pdf" },
     { "title": "علوم الحاسوب من الألف إلى الياء", "path": "assets/prog/computer_science_from_a_to_z.pdf" },
-    { "title": "200 نصيحة بيانات بايثون", "path": "assets/prog/200_python_data_tips.pdf" },
-    { "title": "512 سؤال وجواب ML/DL/DS", "path": "assets/prog/512_ml_dl_ds_qna.pdf" },
-    { "title": "التعلم العميق", "path": "assets/prog/deep_learning.pdf" }
+    { "title": "نصائح بيانات بايثون", "path": "assets/prog/python_data_tips.pdf" },
+    { "title": "أسئلة وأجوبة ML/DL/DS", "path": "assets/prog/512_ml_dl_ds_qna.pdf" },
+    { "title": "تعلم عميق", "path": "assets/prog/deep_learning.pdf" }
   ],
+
   "design": [
-    { "title": "دليلك إلى تصميم الهوية", "path": "assets/design/brand_identity_guide.pdf" },
-    { "title": "أساسيات تصميم الرسومات", "path": "assets/design/graphics_design_basics.pdf" },
-    { "title": "قوالب تصميم الشعار", "path": "assets/design/logo_design_templates.pdf" }
+    { "title": "دليل هوية العلامة", "path": "assets/design/brand_identity_guide.pdf" },
+    { "title": "أساسيات التصميم الجرافيكي", "path": "assets/design/graphics_design_basics.pdf" },
+    { "title": "قوالب شعارات جاهزة", "path": "assets/design/logo_design_templates.pdf" }
   ],
+
   "security": [
-    { "title": "الذكاء الاصطناعي للهاتف", "path": "assets/security/ai_for_mobile.pdf" },
-    { "title": "نظام Kali linux", "path": "assets/security/kali_linux_os.pdf" },
-    { "title": "أخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
+    { "title": "أمن الأجهزة المحمولة", "path": "assets/security/ai_for_mobile.pdf" },
+    { "title": "كالي لينكس OS", "path": "assets/security/kali_linux_os.pdf" },
+    { "title": "أخلاقيات الأمن", "path": "assets/security/ai_ethics.pdf" },
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
     { "title": "لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
+
     {
-      "title": "الهكر الأخلاقي",
+      "title": "الهكر الأخلاقي (سلسلة)",
       "children": [
         { "title": "الجزء 1", "path": "assets/security/ethical_hacking_part1.pdf" },
         { "title": "الجزء 2", "path": "assets/security/ethical_hacking_part2.pdf" },
@@ -32,30 +35,35 @@
         { "title": "الجزء 4", "path": "assets/security/ethical_hacking_part4.pdf" }
       ]
     },
-    { "title": "أمان تطبيقات الويب", "path": "assets/security/web_app_hacking.pdf" }
+
+    { "title": "اختبار اختراق تطبيقات الويب", "path": "assets/security/web_app_hacking.pdf" }
   ],
+
   "languages": [
-    { "title": "محادثات إنجليزية 100", "path": "assets/languages/100_english_conversations.pdf" },
-    { "title": "تحدّث الإنجليزية في 10 أيام", "path": "assets/languages/speak_english_in_10_days.pdf" },
-    { "title": "المستوى الأول إنجليزي", "path": "assets/languages/english_level_1.pdf" }
+    { "title": "100 محادثة إنجليزية", "path": "assets/languages/100_english_conversations.pdf" },
+    { "title": "تحدث الإنجليزية في 10 أيام", "path": "assets/languages/speak_english_in_10_days.pdf" },
+    { "title": "إنجليزي مستوى 1", "path": "assets/languages/english_level_1.pdf" }
   ],
+
   "marketing": [
     { "title": "دليل العمل الحر", "path": "assets/marketing/freelancing_guide.pdf" },
-    { "title": "الوترك نتورك", "path": "assets/marketing/network_work.pdf" },
+    { "title": "شبكات العمل", "path": "assets/marketing/network_work.pdf" },
     { "title": "بيع المنتجات الرقمية", "path": "assets/marketing/sell_digital_products_guide.pdf" },
-    { "title": "مرشد التسويق", "path": "assets/marketing/seo_guide.pdf" },
+    { "title": "دليل السيو", "path": "assets/marketing/seo_guide.pdf" },
     { "title": "مصطلحات التسويق", "path": "assets/marketing/marketing_terms.pdf" }
   ],
-  "maintenance": [
-    { "title": "مكوّنات الصيانة المحمولة", "path": "assets/maintenance/mobile_maintenance_components.pdf" },
-    { "title": "أساسيات صيانة المحمول", "path": "assets/maintenance/mobile_maintenance_basics.pdf" },
-    { "title": "ورشة صيانة المحمول", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
-  ],
-  "office": [
-  { "title": "excel", "path": "assets/office/excel.pdf" },
-  { "title": "تعلم Microsoft Word", "path": "assets/office/word.pdf" },
-  { "title": "شرح الاكسل خطوة بخطوة", "path": "assets/office/الشرح الكامل خطوة بخطوة.pdf" }
 
+  "maintenance": [
+    { "title": "مكوّنات صيانة الجوال", "path": "assets/maintenance/mobile_maintenance_components.pdf" },
+    { "title": "أساسيات صيانة الجوال", "path": "assets/maintenance/mobile_maintenance_basics.pdf" },
+    { "title": "ورشة صيانة الجوال", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
+  ],
+
+  "office": [
+    { "title": "excel", "path": "assets/office/excel.pdf" },
+    { "title": "تعلم Microsoft Word", "path": "assets/office/word.pdf" },
+    { "title": "شرح الاكسل خطوة بخطوة", "path": "assets/office/excel_step_by_step.pdf" }
   ]
 }
+
 
