@@ -9,15 +9,14 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFi
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ========== إعدادات عامة ==========
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("courses-bot")
 
 ROOT = Path(__file__).parent.resolve()
-PORT = int(os.getenv("PORT", "10000"))  # Render يمرّر PORT
+PORT = int(os.getenv("PORT", "10000"))
 TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
-OWNER = (os.getenv("OWNER_USERNAME") or "").lstrip("@").strip()    # بدون @
-REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "").strip()   # مع @ مثل @mychannel
+OWNER = (os.getenv("OWNER_USERNAME") or "").lstrip("@").strip()
+REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "").strip()
 
 SECTION_TITLES = {
     "prog": "كتب البرمجة 💻",
@@ -30,25 +29,17 @@ SECTION_TITLES = {
 }
 SECTION_ORDER = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
 
-# ========== تحميل الكتالوج مع fallback ==========
 def find_catalog_path() -> Path:
-    candidates = [
-        ROOT / "assets" / "catalog.json",  # المكان الأساسي
-        ROOT / "catalog.json",             # فالباك اختياري
-    ]
+    candidates = [ROOT / "assets" / "catalog.json", ROOT / "catalog.json"]
     for p in candidates:
         if p.is_file():
             return p
-    # لو ما لقى ولا واحد: نرشدك بوضوح
-    raise FileNotFoundError(
-        "لم أجد catalog.json. ضع الملف في assets/catalog.json (يفضل) أو في الجذر."
-    )
+    raise FileNotFoundError("لم أجد catalog.json. ضع الملف في assets/catalog.json أو في الجذر.")
 
 def load_catalog() -> dict:
     path = find_catalog_path()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # تأكيد أن كل قسم عبارة عن قائمة
     for k in list(data.keys()):
         if not isinstance(data[k], list):
             log.warning("Section %s is not a list; removing it.", k)
@@ -68,7 +59,6 @@ def count_items(section_key: str) -> int:
             total += 1
     return total
 
-# ========== Keyboards ==========
 def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
     for key in SECTION_ORDER:
@@ -102,7 +92,6 @@ def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقسم", callback_data=f"CAT|{section_key}")])
     return InlineKeyboardMarkup(rows)
 
-# ========== اشتراك القناة (اختياري) ==========
 async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not REQUIRED_CHANNEL:
         return True
@@ -118,9 +107,8 @@ async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         return ok
     except Exception as e:
         log.warning("membership check failed: %s", e)
-        return True  # نسامح لو فشل الاستعلام
+        return True
 
-# ========== Handlers ==========
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(
         "مرحبًا بك في مكتبة الدورات والكتب 📚\nاختر القسم:",
@@ -186,14 +174,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(file_path, "rb") as f:
                 await q.message.reply_document(
                     document=InputFile(f, filename=file_path.name),
-                    caption=None,  # المطلوب: اسم الملف غير ضروري
+                    caption=None,
                 )
         except Exception as e:
             log.exception("send file failed: %s", e)
             await q.message.reply_text("حدث خطأ أثناء الإرسال. جرّب لاحقًا.")
         return
 
-# ========== Health server ==========
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health", "/healthz"):
@@ -211,25 +198,14 @@ def run_health_server():
     log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     srv.serve_forever()
 
-# ========== Main ==========
 def main():
     if not TOKEN:
         raise RuntimeError("❌ ضع TELEGRAM_TOKEN (أو BOT_TOKEN) في متغيرات البيئة على Render")
-
-    # شغّل health server في Thread منفصل
     Thread(target=run_health_server, daemon=True).start()
-
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .updater(None)  # احترازيًا ضد باج Python 3.13/Updater
-        .build()
-    )
-
+    app = ApplicationBuilder().token(TOKEN).updater(None).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_button))
-
     log.info("🤖 Telegram bot starting…")
     app.run_polling(close_loop=False)
 
