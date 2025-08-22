@@ -9,7 +9,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFi
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 log = logging.getLogger("courses-bot")
 
 ROOT = Path(__file__).parent.resolve()
@@ -29,6 +32,7 @@ SECTION_TITLES = {
 }
 SECTION_ORDER = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
 
+
 def find_catalog_path() -> Path:
     candidates = [ROOT / "assets" / "catalog.json", ROOT / "catalog.json"]
     for p in candidates:
@@ -36,10 +40,12 @@ def find_catalog_path() -> Path:
             return p
     raise FileNotFoundError("لم أجد catalog.json. ضع الملف في assets/catalog.json أو في الجذر.")
 
+
 def load_catalog() -> dict:
     path = find_catalog_path()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    # نظافة
     for k in list(data.keys()):
         if not isinstance(data[k], list):
             log.warning("Section %s is not a list; removing it.", k)
@@ -47,8 +53,10 @@ def load_catalog() -> dict:
     log.info("📘 Using catalog file: %s", path.relative_to(ROOT))
     return data
 
+
 CATALOG = load_catalog()
 log.info("📦 Catalog on start: %s", {k: len(v) for k, v in CATALOG.items()})
+
 
 def count_items(section_key: str) -> int:
     total = 0
@@ -58,6 +66,7 @@ def count_items(section_key: str) -> int:
         else:
             total += 1
     return total
+
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
@@ -69,6 +78,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     if OWNER:
         rows.append([InlineKeyboardButton("✉️ تواصل مع الإدارة", url=f"https://t.me/{OWNER}")])
     return InlineKeyboardMarkup(rows)
+
 
 def section_kb(section_key: str) -> InlineKeyboardMarkup:
     rows = []
@@ -82,6 +92,7 @@ def section_kb(section_key: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="ROOT")])
     return InlineKeyboardMarkup(rows)
 
+
 def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
     rows = []
     group = CATALOG.get(section_key, [])[group_idx]
@@ -91,6 +102,7 @@ def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"📄 {ctitle}", callback_data=f"DOC|{cpath}")])
     rows.append([InlineKeyboardButton("↩️ رجوع للقسم", callback_data=f"CAT|{section_key}")])
     return InlineKeyboardMarkup(rows)
+
 
 async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not REQUIRED_CHANNEL:
@@ -109,6 +121,7 @@ async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         log.warning("membership check failed: %s", e)
         return True
 
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(
         "مرحبًا بك في مكتبة الدورات والكتب 📚\nاختر القسم:",
@@ -116,19 +129,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
+
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER and (update.effective_user.username or "").lower() != OWNER.lower():
         return
     global CATALOG
     CATALOG = load_catalog()
     summary = "\n".join(
-        f"• {SECTION_TITLES.get(k,k)}: <b>{count_items(k)}</b>"
+        f"• {SECTION_TITLES.get(k, k)}: <b>{count_items(k)}</b>"
         for k in SECTION_ORDER if k in CATALOG
     )
     await update.effective_chat.send_message(
         f"تم إعادة تحميل الكتالوج ✅\n{summary}",
         parse_mode=ParseMode.HTML,
     )
+
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -181,6 +196,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("حدث خطأ أثناء الإرسال. جرّب لاحقًا.")
         return
 
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health", "/healthz"):
@@ -191,24 +207,30 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
 
 def run_health_server():
     srv = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     srv.serve_forever()
 
+
 def main():
     if not TOKEN:
         raise RuntimeError("❌ ضع TELEGRAM_TOKEN (أو BOT_TOKEN) في متغيرات البيئة على Render")
     Thread(target=run_health_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).updater(None).build()
+    # لا تستخدم .updater(None) — نتركه افتراضيًا كي يعمل run_polling()
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_button))
     log.info("🤖 Telegram bot starting…")
     app.run_polling(close_loop=False)
 
+
 if __name__ == "__main__":
     main()
+
 
