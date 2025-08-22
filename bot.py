@@ -9,23 +9,16 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFi
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ======================
-# إعدادات عامة
-# ======================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# ========== إعدادات عامة ==========
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("courses-bot")
 
 ROOT = Path(__file__).parent.resolve()
-CATALOG_PATH = ROOT / "catalog.json"     # تأكد أن الملف هنا في الجذر
-PORT = int(os.getenv("PORT", "10000"))   # Render يمرّر PORT
+PORT = int(os.getenv("PORT", "10000"))  # Render يمرّر PORT
 TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
-OWNER = (os.getenv("OWNER_USERNAME") or "").lstrip("@").strip()      # بدون @
-REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "").strip()     # مع @ مثل @mychannel
+OWNER = (os.getenv("OWNER_USERNAME") or "").lstrip("@").strip()    # بدون @
+REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "").strip()   # مع @ مثل @mychannel
 
-# أسماء الأقسام بشكل أجمل
 SECTION_TITLES = {
     "prog": "كتب البرمجة 💻",
     "design": "كتب التصميم 🎨",
@@ -37,17 +30,30 @@ SECTION_TITLES = {
 }
 SECTION_ORDER = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
 
-# ======================
-# تحميل الكتالوج
-# ======================
+# ========== تحميل الكتالوج مع fallback ==========
+def find_catalog_path() -> Path:
+    candidates = [
+        ROOT / "assets" / "catalog.json",  # المكان الأساسي
+        ROOT / "catalog.json",             # فالباك اختياري
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    # لو ما لقى ولا واحد: نرشدك بوضوح
+    raise FileNotFoundError(
+        "لم أجد catalog.json. ضع الملف في assets/catalog.json (يفضل) أو في الجذر."
+    )
+
 def load_catalog() -> dict:
-    with open(CATALOG_PATH, "r", encoding="utf-8") as f:
+    path = find_catalog_path()
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # تنظيف سريع: نتأكد كل قسم عبارة عن list
+    # تأكيد أن كل قسم عبارة عن قائمة
     for k in list(data.keys()):
         if not isinstance(data[k], list):
-            log.warning("Section %s is not list; removing.", k)
+            log.warning("Section %s is not a list; removing it.", k)
             data.pop(k, None)
+    log.info("📘 Using catalog file: %s", path.relative_to(ROOT))
     return data
 
 CATALOG = load_catalog()
@@ -56,15 +62,13 @@ log.info("📦 Catalog on start: %s", {k: len(v) for k, v in CATALOG.items()})
 def count_items(section_key: str) -> int:
     total = 0
     for item in CATALOG.get(section_key, []):
-        if isinstance(item, dict) and "children" in item and isinstance(item["children"], list):
+        if isinstance(item, dict) and isinstance(item.get("children"), list):
             total += len(item["children"])
         else:
             total += 1
     return total
 
-# ======================
-# الواجهات (Keyboards)
-# ======================
+# ========== Keyboards ==========
 def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
     for key in SECTION_ORDER:
@@ -98,9 +102,7 @@ def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقسم", callback_data=f"CAT|{section_key}")])
     return InlineKeyboardMarkup(rows)
 
-# ======================
-# اشتراك القناة (اختياري)
-# ======================
+# ========== اشتراك القناة (اختياري) ==========
 async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not REQUIRED_CHANNEL:
         return True
@@ -116,12 +118,9 @@ async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         return ok
     except Exception as e:
         log.warning("membership check failed: %s", e)
-        # نسمح مؤقتًا لو فشل الاستعلام
-        return True
+        return True  # نسامح لو فشل الاستعلام
 
-# ======================
-# Handlers
-# ======================
+# ========== Handlers ==========
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(
         "مرحبًا بك في مكتبة الدورات والكتب 📚\nاختر القسم:",
@@ -130,13 +129,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # (اختياري) قصر إعادة التحميل على المالك
     if OWNER and (update.effective_user.username or "").lower() != OWNER.lower():
         return
     global CATALOG
     CATALOG = load_catalog()
     summary = "\n".join(
-        f"• {SECTION_TITLES.get(k,k)}: <b>{count_items(k)}</b>" for k in SECTION_ORDER if k in CATALOG
+        f"• {SECTION_TITLES.get(k,k)}: <b>{count_items(k)}</b>"
+        for k in SECTION_ORDER if k in CATALOG
     )
     await update.effective_chat.send_message(
         f"تم إعادة تحميل الكتالوج ✅\n{summary}",
@@ -146,7 +145,7 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data or ""
+    data = (q.data or "").strip()
 
     if data == "ROOT":
         await q.edit_message_text("اختر القسم:", reply_markup=main_menu_kb(), parse_mode=ParseMode.HTML)
@@ -176,7 +175,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         path = data.split("|", 1)[1].strip()
         if not await ensure_member(update, context):
             return
-        file_path = ROOT / path
+        file_path = (ROOT / path).resolve()
         if not file_path.exists():
             await q.message.reply_text(
                 f"⚠️ لم أجد الملف:\n<code>{path}</code>",
@@ -187,16 +186,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(file_path, "rb") as f:
                 await q.message.reply_document(
                     document=InputFile(f, filename=file_path.name),
-                    caption=None,  # اسم الملف يكفي حسب طلبك
+                    caption=None,  # المطلوب: اسم الملف غير ضروري
                 )
         except Exception as e:
             log.exception("send file failed: %s", e)
             await q.message.reply_text("حدث خطأ أثناء الإرسال. جرّب لاحقًا.")
         return
 
-# ======================
-# Health server (HTTP)
-# ======================
+# ========== Health server ==========
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health", "/healthz"):
@@ -207,28 +204,25 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404)
-            self.end_headers()
+            self.send_response(404); self.end_headers()
 
 def run_health_server():
     srv = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    logging.getLogger("courses-bot").info("🌐 Health server on 0.0.0.0:%s", PORT)
+    log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     srv.serve_forever()
 
-# ======================
-# Main
-# ======================
+# ========== Main ==========
 def main():
     if not TOKEN:
         raise RuntimeError("❌ ضع TELEGRAM_TOKEN (أو BOT_TOKEN) في متغيرات البيئة على Render")
 
-    # شغّل health server في خيط منفصل
+    # شغّل health server في Thread منفصل
     Thread(target=run_health_server, daemon=True).start()
 
     app = (
         ApplicationBuilder()
         .token(TOKEN)
-        .updater(None)          # مهم: نتجنب إنشاء Updater لتفادي باج Python 3.13
+        .updater(None)  # احترازيًا ضد باج Python 3.13/Updater
         .build()
     )
 
