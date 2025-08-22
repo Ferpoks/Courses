@@ -7,14 +7,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# === إعداد اللوج ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 log = logging.getLogger("courses-bot")
 
+# === مسارات ومتغيرات ===
 ROOT = Path(__file__).parent.resolve()
 PORT = int(os.getenv("PORT", "10000"))
 TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
@@ -32,31 +34,29 @@ SECTION_TITLES = {
 }
 SECTION_ORDER = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
 
-
 def find_catalog_path() -> Path:
-    candidates = [ROOT / "assets" / "catalog.json", ROOT / "catalog.json"]
-    for p in candidates:
+    # جرّب داخل assets أولاً ثم الجذر
+    for p in (ROOT / "assets" / "catalog.json", ROOT / "catalog.json"):
         if p.is_file():
             return p
     raise FileNotFoundError("لم أجد catalog.json. ضع الملف في assets/catalog.json أو في الجذر.")
-
 
 def load_catalog() -> dict:
     path = find_catalog_path()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # نظافة
+
+    # تأكد أن كل قسم عبارة عن list
     for k in list(data.keys()):
         if not isinstance(data[k], list):
             log.warning("Section %s is not a list; removing it.", k)
             data.pop(k, None)
+
     log.info("📘 Using catalog file: %s", path.relative_to(ROOT))
     return data
 
-
 CATALOG = load_catalog()
 log.info("📦 Catalog on start: %s", {k: len(v) for k, v in CATALOG.items()})
-
 
 def count_items(section_key: str) -> int:
     total = 0
@@ -66,7 +66,6 @@ def count_items(section_key: str) -> int:
         else:
             total += 1
     return total
-
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
@@ -78,7 +77,6 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     if OWNER:
         rows.append([InlineKeyboardButton("✉️ تواصل مع الإدارة", url=f"https://t.me/{OWNER}")])
     return InlineKeyboardMarkup(rows)
-
 
 def section_kb(section_key: str) -> InlineKeyboardMarkup:
     rows = []
@@ -92,7 +90,6 @@ def section_kb(section_key: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="ROOT")])
     return InlineKeyboardMarkup(rows)
 
-
 def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
     rows = []
     group = CATALOG.get(section_key, [])[group_idx]
@@ -102,7 +99,6 @@ def group_kb(section_key: str, group_idx: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"📄 {ctitle}", callback_data=f"DOC|{cpath}")])
     rows.append([InlineKeyboardButton("↩️ رجوع للقسم", callback_data=f"CAT|{section_key}")])
     return InlineKeyboardMarkup(rows)
-
 
 async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not REQUIRED_CHANNEL:
@@ -118,17 +114,17 @@ async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
             )
         return ok
     except Exception as e:
+        # لو صار خطأ في التحقق نخليها True حتى لا نوقف المستخدمين
         log.warning("membership check failed: %s", e)
         return True
 
-
+# === الأوامر ===
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(
         "مرحبًا بك في مكتبة الدورات والكتب 📚\nاختر القسم:",
         reply_markup=main_menu_kb(),
         parse_mode=ParseMode.HTML,
     )
-
 
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER and (update.effective_user.username or "").lower() != OWNER.lower():
@@ -144,7 +140,7 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
-
+# === أزرار الكيبورد ===
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -196,7 +192,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("حدث خطأ أثناء الإرسال. جرّب لاحقًا.")
         return
 
-
+# === Health server ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health", "/healthz"):
@@ -210,27 +206,27 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-
 def run_health_server():
     srv = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     log.info("🌐 Health server on 0.0.0.0:%s", PORT)
     srv.serve_forever()
 
-
 def main():
     if not TOKEN:
         raise RuntimeError("❌ ضع TELEGRAM_TOKEN (أو BOT_TOKEN) في متغيرات البيئة على Render")
+
     Thread(target=run_health_server, daemon=True).start()
-    # لا تستخدم .updater(None) — نتركه افتراضيًا كي يعمل run_polling()
-    app = ApplicationBuilder().token(TOKEN).build()
+
+    app = Application.builder().token(TOKEN).build()   # v21 – بدون Updater نهائيًا
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_button))
-    log.info("🤖 Telegram bot starting…")
-    app.run_polling(close_loop=False)
 
+    log.info("🤖 Telegram bot starting…")
+    app.run_polling()  # v21 يعمل مباشرة بدون Updater
 
 if __name__ == "__main__":
     main()
+
 
 
