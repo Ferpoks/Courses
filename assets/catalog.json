@@ -53,6 +53,6 @@
   ],
   "office": [
     { "title": "excel", "path": "assets/office/excel.pdf" },
-    { "title": "كتاب كامل في تعلم Microsoft Word", "path": "assets/office/microsoft_word_full.pdf" }
+    { "title": "Microsoft Word", "path": "assets/office/microsoft_word_full.pdf" }
   ]
 }
