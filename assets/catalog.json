@@ -19,16 +19,17 @@
   ],
   "security": [
     { "title": "الذكاء الاصطناعي للهاتف", "path": "assets/security/ai_for_mobile.pdf" },
-    { "title": "نظام التشغيل Kali linux", "path": "assets/security/kali_linux_os.pdf" },
+    { "title": "نظام Kali linux", "path": "assets/security/kali_linux_os.pdf" },
     { "title": "أخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
-    { "title": "تعلم لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
+    { "title": "لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
 
-    { "title": "الهكر الأخلاقي", "children": [
-      { "title": "الجزء 1", "path": "assets/security/ethical_hacking_part1.pdf" },
-      { "title": "الجزء 2", "path": "assets/security/ethical_hacking_part2.pdf" },
-      { "title": "الجزء 3", "path": "assets/security/ethical_hacking_part3.pdf" },
-      { "title": "الجزء 4", "path": "assets/security/ethical_hacking_part4.pdf" }
+  "ethical_hacking_parts": {
+      "children": [
+        { "title": "الجزء 1", "path": "assets/security/ethical_hacking_part1.pdf" },
+        { "title": "الجزء 2", "path": "assets/security/ethical_hacking_part2.pdf" },
+        { "title": "الجزء 3", "path": "assets/security/ethical_hacking_part3.pdf" },
+        { "title": "الجزء 4", "path": "assets/security/ethical_hacking_part4.pdf" }
     ]},
 
     { "title": "البرمجة بلغة C", "path": "assets/security/security_language_programming_c.pdf" },
@@ -52,9 +53,9 @@
     { "title": "ورشة صيانة أجهزة الجوالات", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
   ],
   "office": [
-  { "title": "excel", "path": "assets/office/excel.pdf" },
-  { "title": " تعلم من الصفر Microsoft Word", "path": "assets/office/word.pdf" }
-      { "title": "شرح الاكسل خطوة بخطوة", "path": "assets/office/excel step by step.pdf" },
+    { "title": "excel",           "path": "assets/office/excel.pdf" },
+    { "title": "شرح الإكسل خطوة بخطوة", "path": "assets/office/excel_step_by_step.pdf" },
+    { "title": "Microsoft Word",  "path": "assets/office/word.pdf" }
 ]
 
 }
