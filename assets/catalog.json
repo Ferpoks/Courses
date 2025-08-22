@@ -52,9 +52,10 @@
     { "title": "ورشة صيانة المحمول", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
   ],
   "office": [
-    { "title": "excel", "path": "assets/office/excel.pdf" },
-    { "title": "شرح الإكسل خطوة بخطوة", "path": "assets/office/excel_step_by_step.pdf" },
-    { "title": "Microsoft Word", "path": "assets/office/word.pdf" }
+  { "title": "excel", "path": "assets/office/excel.pdf" },
+  { "title": "تعلم Microsoft Word", "path": "assets/office/word.pdf" },
+  { "title": "شرح الاكسل خطوة بخطوة", "path": "assets/office/الشرح الكامل خطوة بخطوة.pdf" }
+
   ]
 }
 
