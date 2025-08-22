@@ -52,7 +52,8 @@
     { "title": "ورشة صيانة أجهزة الجوالات", "path": "assets/maintenance/mobile_repair_workshop.pdf" }
   ],
   "office": [
-    { "title": "excel", "path": "assets/office/excel.pdf" },
-    { "title": "Microsoft Word", "path": "assets/office/microsoft_word_full.pdf" }
-  ]
+  { "title": "excel", "path": "assets/office/excel.pdf" },
+  { "title": "Microsoft Word", "path": "assets/office/word.pdf" }
+]
+
 }
