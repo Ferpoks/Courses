@@ -3,14 +3,15 @@ import json
 import logging
 import asyncio
 from pathlib import Path
-from threading import Thread
+from typing import Dict, Any, List, Optional
 
 from aiohttp import web
+
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    FSInputFile,
+    InputFile,  # ← البديل الصحيح في PTB 20
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -20,251 +21,249 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-# =========================
-# إعدادات عامة + لوجز
-# =========================
+# ========= إعدادات عامة =========
 logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO
 )
 log = logging.getLogger("courses-bot")
 
-ROOT = Path(__file__).parent
-CATALOG_FILE = ROOT / "catalog.json"
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "").lstrip("@").strip()
+REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "").strip()  # مثل: @mychannel
 
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
-OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").strip().lstrip("@")
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()  # مثال: @your_channel
-HEALTH_PORT = int(os.getenv("PORT", "10000"))  # Render يستخدم PORT إن وُجد
+CATALOG_PATH = Path("assets/catalog.json")
 
-# =========================
-# تحميل الكتالوج
-# =========================
-def load_catalog() -> dict:
-    with open(CATALOG_FILE, "r", encoding="utf-8") as f:
+# عناوين الأقسام + أيقونات لواجهة أجمل
+SECTION_TITLES = {
+    "prog": "كتب البرمجة 💻",
+    "design": "كتب التصميم 🎨",
+    "security": "كتب الأمن 🛡️",
+    "languages": "كتب اللغات 🌐",
+    "marketing": "كتب التسويق 💼",
+    "maintenance": "كتب الصيانة 🧰",
+    "office": "كتب البرامج المكتبية 🗂️",
+}
+SECTION_ORDER = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
+
+CATALOG: Dict[str, Any] = {}
+
+
+# ========= تحميل الكتالوج =========
+def load_catalog() -> Dict[str, Any]:
+    with CATALOG_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
+    # تنظيف بيانات بسيطة
+    for k, v in list(data.items()):
+        if not isinstance(v, list):
+            log.warning("Section %s is not a list; skipping.", k)
+            data.pop(k, None)
     return data
 
 
-CATALOG = load_catalog()
-log.info("📦 Catalog on start: %s", {k: len(v) for k, v in CATALOG.items()})
-
-# =========================
-# أدوات
-# =========================
-def count_items(node) -> int:
-    """يحسب عدد الملفات (يشمل الأطفال)."""
-    if isinstance(node, list):
-        return sum(count_items(x) for x in node)
-    if isinstance(node, dict):
-        if "children" in node:
-            return sum(count_items(c) for c in node["children"])
-        return 1  # عنصر ورقي (ملف واحد)
-    return 0
+def count_summary(data: Dict[str, Any]) -> Dict[str, int]:
+    out = {}
+    for sec, items in data.items():
+        total = 0
+        for it in items:
+            if "children" in it and isinstance(it["children"], list):
+                total += len(it["children"])
+            else:
+                total += 1
+        out[sec] = total
+    return out
 
 
-def nice_name(key: str) -> tuple[str, str]:
-    """اسم عربي وإيموجي للقسم."""
-    mapping = {
-        "prog": ("كتب البرمجة", "💻"),
-        "design": ("كتب التصميم", "🎨"),
-        "security": ("كتب الأمن", "🛡️"),
-        "languages": ("كتب اللغات", "🗣️"),
-        "marketing": ("كتب التسويق", "📈"),
-        "maintenance": ("كتب الصيانة", "🛠️"),
-        "office": ("كتب البرامج المكتبية", "📂"),
-    }
-    return mapping.get(key, (key, "📚"))
-
-
-def main_menu_markup() -> InlineKeyboardMarkup:
+# ========= أزرار الواجهات =========
+def main_menu_kb() -> InlineKeyboardMarkup:
     rows = []
-    for key in ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]:
-        title, emoji = nice_name(key)
-        total = count_items(CATALOG.get(key, []))
-        btn = InlineKeyboardButton(f"{title} {emoji} · {total}", callback_data=f"cat:{key}")
-        rows.append([btn])
-    rows.append([InlineKeyboardButton("✉️ تواصل مع الإدارة", url="https://t.me/%s" % OWNER_USERNAME if OWNER_USERNAME else "https://t.me/")])
+    for key in SECTION_ORDER:
+        if key in CATALOG:
+            rows.append([InlineKeyboardButton(SECTION_TITLES.get(key, key), callback_data=f"menu:{key}")])
+    if OWNER_USERNAME:
+        rows.append([InlineKeyboardButton("✉️ تواصل مع الإدارة", url=f"https://t.me/{OWNER_USERNAME}")])
     return InlineKeyboardMarkup(rows)
 
 
-def category_markup(cat_key: str) -> InlineKeyboardMarkup:
-    items = CATALOG.get(cat_key, [])
-    rows = []
-
-    def add_item_button(title, payload):
-        rows.append([InlineKeyboardButton(title, callback_data=payload)])
-
-    for item in items:
+def section_kb(section_key: str) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    items: List[Dict[str, Any]] = CATALOG.get(section_key, [])
+    for idx, item in enumerate(items):
+        title = item.get("title", f"Item {idx+1}")
         if "children" in item:
-            # عنوان مجموعة فرعية
-            title = f"📁 {item['title']}"
-            add_item_button(title, f"grp:{cat_key}:{item['title']}")
+            rows.append([InlineKeyboardButton(f"{title} ▸", callback_data=f"submenu:{section_key}:{idx}")])
         else:
-            title = f"📄 {item['title']}"
-            add_item_button(title, f"doc:{item['path']}")
+            path = item.get("path", "")
+            rows.append([InlineKeyboardButton(title, callback_data=f"open:{path}")])
 
-    rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="back")])
+    rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="back:main")])
     return InlineKeyboardMarkup(rows)
 
 
-def group_markup(cat_key: str, group_title: str) -> InlineKeyboardMarkup:
-    # ابحث عن المجموعة المطلوبة
-    group = None
-    for item in CATALOG.get(cat_key, []):
-        if item.get("children") and item.get("title") == group_title:
-            group = item
-            break
-
-    rows = []
-    if group:
-        for child in group["children"]:
-            rows.append([
-                InlineKeyboardButton(f"📄 {child['title']}", callback_data=f"doc:{child['path']}")
-            ])
-
-    rows.append([InlineKeyboardButton("↩️ رجوع", callback_data=f"cat:{cat_key}")])
+def children_kb(section_key: str, item_idx: int) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    item = CATALOG.get(section_key, [])[item_idx]
+    for cidx, child in enumerate(item.get("children", [])):
+        ctitle = child.get("title", f"Child {cidx+1}")
+        cpath = child.get("path", "")
+        rows.append([InlineKeyboardButton(ctitle, callback_data=f"open:{cpath}")])
+    rows.append([InlineKeyboardButton("↩️ رجوع للقسم", callback_data=f"back:section:{section_key}")])
     return InlineKeyboardMarkup(rows)
 
 
-async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """يتأكد من اشتراك المستخدم في القناة المطلوبة قبل التحميل (إن تم ضبطها)."""
+# ========= التحقق من الاشتراك =========
+async def is_member(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     if not REQUIRED_CHANNEL:
         return True
     try:
-        user_id = update.effective_user.id
-        member = await context.bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
-        status = member.status  # 'creator','administrator','member','restricted','left','kicked'
-        ok = status in ("creator", "administrator", "member")
-        if not ok:
-            await update.effective_message.reply_text(
-                f"🔒 للتحميل يجب الاشتراك أولاً في القناة {REQUIRED_CHANNEL} ثم أرسل /start",
-            )
-        return ok
+        member = await ctx.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator")
     except Exception as e:
         log.warning("membership check failed: %s", e)
-        # إن فشل الاستعلام نسمح مؤقتًا
+        # عند فشل الاستعلام نسمح مؤقتاً
         return True
 
 
-# =========================
-# Handlers
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    title = "مرحبًا بك في مكتبة الكورسات 📚"
-    sub = "اختر القسم:"
-    await update.message.reply_text(
-        f"<b>{title}</b>\n{sub}",
+# ========= Handlers =========
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message(
+        "مرحباً بك في مكتبة الدورات 📚\nاختر القسم:",
+        reply_markup=main_menu_kb(),
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_markup(),
     )
 
 
-async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # السماح فقط للمالك إن وُضع اسمه
-    if OWNER_USERNAME and (update.effective_user.username or "").lower() != OWNER_USERNAME.lower():
-        return
+async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CATALOG
     CATALOG = load_catalog()
-    counts = "\n".join(
-        f"• {nice_name(k)[0]}: <b>{count_items(v)}</b>" for k, v in CATALOG.items()
+    summary = count_summary(CATALOG)
+
+    def fmt(sec, emoji):
+        return f"{emoji} <b>{SECTION_TITLES.get(sec, sec)}</b>: <code>{summary.get(sec, 0)}</code>"
+
+    text = (
+        "تمت إعادة تحميل الكتالوج ✅\n"
+        "حالة المحتوى:\n"
+        f"{fmt('prog', '💻')}\n"
+        f"{fmt('design', '🎨')}\n"
+        f"{fmt('security', '🛡️')}\n"
+        f"{fmt('languages', '🌐')}\n"
+        f"{fmt('marketing', '💼')}\n"
+        f"{fmt('maintenance', '🧰')}\n"
+        f"{fmt('office', '🗂️')}"
     )
-    await update.message.reply_text(
-        f"تم إعادة تحميل الكتالوج ✅\nحالة المحتوى:\n{counts}",
-        parse_mode=ParseMode.HTML,
-    )
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
 
 
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data or ""
-
-    # رجوع
-    if data == "back":
-        await query.edit_message_reply_markup(reply_markup=main_menu_markup())
+async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
         return
+    await q.answer()
 
-    # فتح قسم
-    if data.startswith("cat:"):
-        cat_key = data.split(":", 1)[1]
-        title, emoji = nice_name(cat_key)
-        await query.edit_message_text(
-            text=f"كتب {title} {emoji} – اختر:",
-            reply_markup=category_markup(cat_key),
+    data = q.data or ""
+    chat_id = q.message.chat_id
+    user_id = q.from_user.id
+
+    if data.startswith("menu:"):
+        sec = data.split(":", 1)[1]
+        await q.edit_message_text(
+            f"{SECTION_TITLES.get(sec, sec)} — اختر:",
+            reply_markup=section_kb(sec),
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    # فتح مجموعة فرعية داخل قسم
-    if data.startswith("grp:"):
-        _, cat_key, group_title = data.split(":", 2)
-        await query.edit_message_text(
-            text=f"📁 {group_title} – اختر:",
-            reply_markup=group_markup(cat_key, group_title),
+    if data.startswith("submenu:"):
+        _, sec, idxs = data.split(":")
+        idx = int(idxs)
+        item_title = CATALOG.get(sec, [])[idx].get("title", "")
+        await q.edit_message_text(
+            f"{item_title} — اختر:",
+            reply_markup=children_kb(sec, idx),
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    # إرسال ملف
-    if data.startswith("doc:"):
-        path = data.split(":", 1)[1]
-        if not await ensure_member(update, context):
+    if data.startswith("back:"):
+        parts = data.split(":")
+        if len(parts) == 2 and parts[1] == "main":
+            await q.edit_message_text("اختر القسم:", reply_markup=main_menu_kb(), parse_mode=ParseMode.HTML)
+        elif len(parts) == 3 and parts[1] == "section":
+            sec = parts[2]
+            await q.edit_message_text(
+                f"{SECTION_TITLES.get(sec, sec)} — اختر:",
+                reply_markup=section_kb(sec),
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    if data.startswith("open:"):
+        path = data.split(":", 1)[1].strip()
+        if not await is_member(context, user_id):
+            await context.bot.send_message(
+                chat_id,
+                f"🔒 للتحميل يجب الاشتراك بالقناة أولاً: {REQUIRED_CHANNEL}",
+            )
             return
 
+        # إرسال الملف
         try:
-            file_path = ROOT / path
-            if not file_path.exists():
-                await query.message.reply_text(f"⚠️ لم أجد الملف في السيرفر:\n<code>{path}</code>", parse_mode=ParseMode.HTML)
-                return
+            p = Path(path)
+            if not p.is_file():
+                raise FileNotFoundError(path)
 
-            await query.message.reply_document(
-                document=FSInputFile(str(file_path)),
-                caption=Path(path).name,
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=InputFile(p),  # ← هنا التغيير
             )
+        except FileNotFoundError:
+            await context.bot.send_message(chat_id, f"لم أجد الملف في السيرفر: <code>{path}</code>", parse_mode=ParseMode.HTML)
         except Exception as e:
             log.exception("send file failed: %s", e)
-            await query.message.reply_text("حدث خطأ أثناء الإرسال. جرّب لاحقًا.")
+            await context.bot.send_message(chat_id, "حدث خطأ أثناء الإرسال. جرّب لاحقاً.")
         return
 
 
-# =========================
-# Health server (Render)
-# =========================
-async def handle_health(_):
+# ========= Health server (Render) =========
+async def health_handler(_request: web.Request):
     return web.Response(text="ok")
 
-def run_health_server():
+async def run_health_server():
     app = web.Application()
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/health", handle_health)
-    app.router.add_get("/healthz", handle_health)
-    web.run_app(app, host="0.0.0.0", port=HEALTH_PORT)
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    app.router.add_get("/healthz", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
+    await site.start()
+    log.info("🌐 Health server on 0.0.0.0:10000 (paths: /healthz,/health,/)")
 
-# =========================
-# Main
-# =========================
+
+# ========= Main =========
 def main():
-    if not BOT_TOKEN:
+    global CATALOG
+
+    if not TOKEN:
         raise RuntimeError("ضع TELEGRAM_TOKEN في متغيرات البيئة على Render")
 
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    CATALOG = load_catalog()
+    log.info("📦 Catalog on start: %s", {k: count_summary(CATALOG).get(k, 0) for k in SECTION_ORDER})
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("reload", reload_cmd))
-    application.add_handler(CallbackQueryHandler(on_button))
+    application = ApplicationBuilder().token(TOKEN).build()
 
-    # شغّل البوت في Thread، والخادم الصحي في الـ Main
-    def _run_bot():
-        log.info("🤖 Telegram bot starting…")
-        application.run_polling(close_loop=False)
+    # أوامر
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("reload", cmd_reload))
+    # أزرار
+    application.add_handler(CallbackQueryHandler(cb_handler))
 
-    Thread(target=_run_bot, daemon=True).start()
-    log.info("🌐 Health server on 0.0.0.0:%s", HEALTH_PORT)
-    run_health_server()
+    # نشّط خادم الصحة بالخلفية
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_health_server())
+
+    log.info("🤖 Telegram bot starting…")
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
