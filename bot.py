@@ -8,7 +8,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputFile,   # متوافق مع كل الإصدارات
+    InputFile,  # متوافق عبر الإصدارات
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -56,12 +56,13 @@ def load_catalog() -> Dict[str, List[Dict[str, str]]]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
+    # تأكد من الأنواع
     for k, v in list(data.items()):
         if not isinstance(v, list):
             logger.warning("Catalog key %s is not a list; skipping.", k)
             data.pop(k, None)
 
-    # إزالة C من الأمن (لو انحط بالخطأ)
+    # إزالة "البرمجة بلغة C" من الأمن إن وُجدت بالخطأ (موجودة في قسم البرمجة)
     if "security" in data:
         data["security"] = [
             item for item in data["security"]
@@ -84,7 +85,7 @@ SECTION_META = {
     "office": ("📂 كتب البرامج المكتبية", "office"),
 }
 
-# ======================== المساعدات =========================
+# ======================== واجهات المستخدم ====================
 def build_main_menu() -> InlineKeyboardMarkup:
     rows = []
     for key in ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]:
@@ -106,6 +107,27 @@ def build_section_menu(section_key: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="back:menu")])
     return InlineKeyboardMarkup(rows)
 
+# ===================== أدوات مطابقة الأسماء ===================
+def _normalize(s: str) -> str:
+    """يحذف المسافات والشرطات وكل ما ليس حرف/رقم، ويحوّل لحروف صغيرة."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+def _variants(stem: str) -> List[str]:
+    """ينتج أشكال متعددة للاسم لتقبّل الشرطات/المسافات/الأندرلاين."""
+    base = stem
+    v = {
+        base,
+        base.replace("-", " ").replace("_", " "),
+        base.replace(" ", "-").replace("_", "-"),
+        base.replace(" ", "_").replace("-", "_"),
+        base.replace("-", ""),
+        base.replace("_", ""),
+        base.replace(" ", ""),
+    }
+    # نسخة مُطبّعة
+    v.add(_normalize(base))
+    return list(v)
+
 # ----------- محلّل مسار ذكي: يحاول إيجاد الملف بأي طريقة -----------
 def resolve_file(path: str) -> Path | None:
     p = Path(path)
@@ -117,28 +139,58 @@ def resolve_file(path: str) -> Path | None:
     else:
         candidates.append(Path("assets") / path)
 
+    # تجربة مباشرة
     for c in candidates:
         if c.exists():
             return c
 
-    # ابحث بالاسم في كامل المشروع (assets/ وأيضًا الجذر)
+    # ابحث بالاسم (اسم الملف فقط) داخل المشروع (assets/ ثم الجذر) بحساسية أحرف متجاهلة
     name = Path(path).name
-    for base in [Path("assets"), Path(".")]:
-        for found in base.rglob(name):
-            if found.is_file():
-                logger.info("🔎 Resolved by search: %s -> %s", path, found)
-                return found
+    name_lower = name.lower()
 
-    # ابحث بدون حساسية حالة الأحرف بالـ stem
-    target_stem = Path(name).stem.lower()
-    for base in [Path("assets"), Path(".")]:
-        for found in base.rglob("*.pdf"):
-            if found.stem.lower() == target_stem:
-                logger.info("🔎 Resolved by stem: %s -> %s", path, found)
-                return found
+    search_roots = [Path("assets"), Path(".")]
+    # 1) مطابقة الاسم الكامل (case-insensitive) مع أي امتداد PDF (.pdf/.PDF/..)
+    for base in search_roots:
+        for found in base.rglob("*"):
+            if found.is_file():
+                if found.suffix.lower() == ".pdf" and found.name.lower() == name_lower:
+                    logger.info("🔎 Resolved by exact name (ci): %s -> %s", path, found)
+                    return found
+
+    # 2) مطابقة الـ stem (بدون الامتداد) مع تجاهل الفواصل وحالة الأحرف
+    target_stem = Path(name).stem
+    target_norm = _normalize(target_stem)
+    target_variants = set(_variants(target_stem))
+
+    best: Path | None = None
+    for base in search_roots:
+        for found in base.rglob("*"):
+            if not found.is_file():
+                continue
+            if found.suffix.lower() != ".pdf":
+                # لو الامتداد كبير (.PDF) أو مختلف، نتجاهل الشرط ونفحص يدويًا
+                if found.suffix.upper() != ".PDF":
+                    continue
+            stem = found.stem
+            if (
+                _normalize(stem) == target_norm
+                or stem.lower() == target_stem.lower()
+                or stem in target_variants
+                or _normalize(stem) in target_variants
+            ):
+                logger.info("🔎 Resolved by stem/normalize: %s -> %s", path, found)
+                # لو فيه أكثر من واحد، خذ الأقرب داخل assets/
+                if best is None:
+                    best = found
+                else:
+                    if "assets" in str(found) and "assets" not in str(best):
+                        best = found
+    if best:
+        return best
 
     return None
 
+# ======================== إرسال الملفات ======================
 async def send_book(chat_id: int, path: str, context: ContextTypes.DEFAULT_TYPE):
     fs_path = resolve_file(path)
     if not fs_path:
@@ -177,6 +229,32 @@ async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Reload failed: %s", e)
         await update.effective_chat.send_message(f"فشل التحديث: {e}")
 
+async def where_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استعرض ملفات الـ PDF الموجودة فعليًا داخل السيرفر لقسم معيّن.
+       مثال: /where maintenance
+    """
+    if not context.args:
+        await update.effective_chat.send_message("استخدم: /where maintenance (أو office, prog, …)")
+        return
+    sec = context.args[0].strip().lower()
+    if sec not in SECTION_META:
+        await update.effective_chat.send_message("القسم غير معروف. الأقسام: prog, design, security, languages, marketing, maintenance, office")
+        return
+
+    folder = Path("assets") / sec
+    if not folder.exists():
+        await update.effective_chat.send_message(f"لا يوجد مجلد لهذا القسم: {folder}")
+        return
+
+    files = sorted([p.name for p in folder.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"])
+    if not files:
+        await update.effective_chat.send_message("لا توجد ملفات PDF داخل هذا القسم على السيرفر.")
+        return
+
+    # قص القائمة إن كانت طويلة
+    text = "الملفات الموجودة:\n" + "\n".join(f"- {name}" for name in files[:100])
+    await update.effective_chat.send_message(text)
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -207,6 +285,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reload", reload_cmd))
+    app.add_handler(CommandHandler("where", where_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     logger.info("🤖 Telegram bot starting…")
