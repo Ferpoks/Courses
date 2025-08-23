@@ -22,6 +22,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import BadRequest  # لمعالجة "Message is not modified"
 
 # ===================== إعدادات عامة =====================
 TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN") or ""
@@ -56,7 +57,6 @@ L = {
         "missing": "⚠️ لم أجد الملف في السيرفر:\n",
         "change_language": "🌍 تغيير اللغة | Change Language",
         "start": "▶️ Start",
-        "help": "🆘 Help",
         "myinfo": "🪪 معلوماتي",
         "greet": "👋 الترحيب",
         "help_text_contact": "للتواصل مع الإدارة:",
@@ -84,7 +84,6 @@ L = {
         "missing": "⚠️ File not found on server:\n",
         "change_language": "🌍 Change Language | تغيير اللغة",
         "start": "▶️ Start",
-        "help": "🆘 Help",
         "myinfo": "🪪 My info",
         "greet": "👋 Welcome",
         "help_text_contact": "Contact the admin:",
@@ -161,8 +160,8 @@ def bottom_keyboard(update: Update) -> ReplyKeyboardMarkup:
         [KeyboardButton(s["office"])],
         [KeyboardButton(L[ulang(update)]["change_language"]),
          KeyboardButton(L[ulang(update)]["contact_short"])],
-        [KeyboardButton(L[ulang(update)]["start"]),
-         KeyboardButton(L[ulang(update)]["help"])],
+        # حذف زر Help — أبقينا Start فقط
+        [KeyboardButton(L[ulang(update)]["start"])],
         [KeyboardButton(L[ulang(update)]["myinfo"]),
          KeyboardButton(L[ulang(update)]["greet"])],
     ]
@@ -355,6 +354,13 @@ async def menu_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, text: st
             text=text,
             reply_markup=kb,
         )
+    except BadRequest as e:
+        # لو النص لم يتغير، لا تنشئ رسالة جديدة
+        if "message is not modified" in str(e).lower():
+            return
+        # غير ذلك — أعد إنشاء الرسالة
+        msg = await update.effective_message.reply_text(text, reply_markup=kb)
+        await set_menu_message(uid, msg.chat.id, msg.message_id)
     except Exception:
         msg = await update.effective_message.reply_text(text, reply_markup=kb)
         await set_menu_message(uid, msg.chat.id, msg.message_id)
@@ -374,24 +380,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=bottom_keyboard(update),
         )
 
-    # جهّز رسالة القائمة القابلة للتعديل
+    # جهّز/حدّث رسالة القائمة القابلة للتعديل (مع منع التكرار)
     await ensure_menu_exists(update, context)
     await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_membership(update, context):
-        return
-    if OWNER_USERNAME:
-        await update.effective_message.reply_text(
-            f"{L[ulang(update)]['help_text_contact']} https://t.me/{OWNER_USERNAME}",
-            reply_markup=bottom_keyboard(update),
-            disable_web_page_preview=True,
-        )
-    else:
-        await update.effective_message.reply_text(
-            "ضع OWNER_USERNAME في متغيرات البيئة لتمكين رابط التواصل.",
-            reply_markup=bottom_keyboard(update),
-        )
 
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CATALOG
@@ -461,7 +452,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == L[lang]["change_language"]:
         USER_LANG[uid] = ("en" if lang == "ar" else "ar")
-        # لا نرسل لوحة جديدة إذا كانت أُرسلت سابقًا
         if uid not in KB_SENT:
             KB_SENT.add(uid)
             await update.effective_message.reply_text(
@@ -471,7 +461,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
         return
 
-    if text == L[lang]["contact_short"] or text == L[lang]["help"]:
+    if text == L[lang]["contact_short"]:
         if OWNER_USERNAME:
             await update.effective_message.reply_text(
                 f"{L[ulang(update)]['help_text_contact']} https://t.me/{OWNER_USERNAME}",
@@ -507,7 +497,7 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
+    # أبقينا /reload فقط — زر Help حُذف من اللوحة السفلية
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
