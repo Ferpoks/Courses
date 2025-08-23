@@ -1,407 +1,403 @@
-import os, re, json, logging, threading
+# bot.py
+import os
+import json
+import logging
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-# توافق FSInputFile / InputFile لجميع نسخ PTB
-try:
-    from telegram import FSInputFile as TG_FSInputFile
-except Exception:
-    TG_FSInputFile = None  # type: ignore
-    try:
-        from telegram import InputFile as TG_InputFile
-    except Exception:
-        TG_InputFile = None  # type: ignore
-
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+)
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
-# ------------ إعدادات وتهيئة ------------
+# ----------------------- إعدادات أساسية -----------------------
+TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "")  # مثال: @my_channel
+BASE_DIR = Path(__file__).parent
+CATALOG_PATH = BASE_DIR / "assets" / "catalog.json"
+ASSETS_DIR = BASE_DIR / "assets"
+
 logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("courses-bot")
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "").strip()   # مثال: @your_channel
-OWNER_USERNAME   = os.environ.get("OWNER_USERNAME", "").strip()     # مثال: your_username
+# لغة افتراضية لكل مستخدم (بالذاكرة)
+USER_LANG: dict[int, str] = {}
 
-CATALOG_PATH = "assets/catalog.json"
-HEALTH_HOST, HEALTH_PORT = "0.0.0.0", int(os.environ.get("PORT_HEALTH", "10000"))
-
-SECTIONS = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
-
-# تخزين اللغة (مزدوج: ذاكرة عامة + user_data لضمان الاستمرارية)
-_user_lang_memory: Dict[int, str] = {}
-
-def get_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    uid = (update.effective_user.id if update.effective_user else None)
-    # أولاً من user_data (خاص PTB)
-    if uid is not None:
-        v = context.user_data.get("lang")
-        if isinstance(v, str):
-            return v
-        # أو من الذاكرة العامة
-        v2 = _user_lang_memory.get(uid)
-        if isinstance(v2, str):
-            context.user_data["lang"] = v2
-            return v2
-    return "ar"
-
-def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str) -> None:
-    uid = (update.effective_user.id if update.effective_user else None)
-    context.user_data["lang"] = lang
-    if uid is not None:
-        _user_lang_memory[uid] = lang
-
-T = {
+# قاموس نصوص الواجهة
+I18N = {
     "ar": {
-        "lang_prompt": "اختر اللغة:",
-        "start_title": "مرحبًا بك في مكتبة الدورات 📚\nاختر القسم:",
-        "back": "رجوع 🔙",
-        "contact": "تواصل مع الإدارة ✉️",
-        "not_member_title": "🔐 للوصول للمحتوى، اشترك في القناة ثم اضغط تحقّق:",
-        "join": "الانضمام للقناة 📢",
-        "recheck": "تحقّق ✅",
-        "children_title": "اختر جزءًا:",
-        "reloaded": "تم إعادة تحميل الكاتالوج ✅",
-        "missing": "⚠️ لم أجد الملف في السيرفر:\n<code>{path}</code>",
-        "unknown": "هذا الخيار غير معروف.",
-        "choose_lang_button_ar": "🇸🇦 العربية",
-        "choose_lang_button_en": "🇬🇧 English",
-        "sections": {
-            "prog": "البرمجة", "design": "التصميم", "security": "الأمن",
-            "languages": "اللغات", "marketing": "التسويق",
-            "maintenance": "الصيانة", "office": "البرامج المكتبية",
-        },
-        "contact_caption": f"@{OWNER_USERNAME}" if OWNER_USERNAME else "—",
+        "home_title": "مرحبًا بك في مكتبة الكورسات 📚\nاختر القسم:",
+        "back": "رجوع",
+        "contact": "تواصل مع الإدارة 🛠️",
+        "arabic": "العربية 🇸🇦",
+        "english": "English 🇬🇧",
+        "not_found": "⚠️ لم أجد الملف في السيرفر:\n<code>{path}</code>",
+        "must_join": "للاستخدام يجب الاشتراك في القناة أولاً ثم اضغط /start",
+        "menu_contact_value": "https://t.me/{admin}",
+        "series": "سلسلة",
     },
     "en": {
-        "lang_prompt": "Choose language:",
-        "start_title": "Welcome to the courses library 📚\nPick a category:",
-        "back": "Back 🔙",
-        "contact": "Contact admin ✉️",
-        "not_member_title": "🔐 To access content, join the channel then tap Verify:",
-        "join": "Join channel 📢",
-        "recheck": "Verify ✅",
-        "children_title": "Choose a part:",
-        "reloaded": "Catalog reloaded ✅",
-        "missing": "⚠️ File not found on server:\n<code>{path}</code>",
-        "unknown": "Unknown option.",
-        "choose_lang_button_ar": "🇸🇦 Arabic",
-        "choose_lang_button_en": "🇬🇧 English",
-        "sections": {
-            "prog": "Programming", "design": "Design", "security": "Security",
-            "languages": "Languages", "marketing": "Marketing",
-            "maintenance": "Maintenance", "office": "Office apps",
-        },
-        "contact_caption": f"@{OWNER_USERNAME}" if OWNER_USERNAME else "—",
+        "home_title": "Welcome to the courses library 📚\nPick a category:",
+        "back": "Back",
+        "contact": "Contact admin 🛠️",
+        "arabic": "العربية 🇸🇦",
+        "english": "English 🇬🇧",
+        "not_found": "⚠️ File not found on server:\n<code>{path}</code>",
+        "must_join": "Please join the channel first, then press /start.",
+        "menu_contact_value": "https://t.me/{admin}",
+        "series": "Series",
     },
 }
 
-SECTION_EMOJI = {
-    "prog":"💻","design":"🎨","security":"🔐","languages":"🗣️",
-    "marketing":"📈","maintenance":"🛠️","office":"🗂️"
+# أيقونات الأقسام
+CAT_EMOJI = {
+    "prog": "💻",
+    "design": "🎨",
+    "security": "🛡️",
+    "languages": "🗣️",
+    "marketing": "📈",
+    "maintenance": "🛠️",
+    "office": "📁",
 }
 
-def pick_emoji(title: str) -> str:
-    t = (title or "").lower()
-    pairs = [
-        (["excel","اكسل"],"📊"), (["word","وورد"],"📝"), (["python","بايثون"],"🐍"),
-        (["php"],"🐘"), (["mysql"],"🛢️"), (["linux","لينكس","kali"],"🐧"),
-        (["web","ويب"],"🌐"), (["security","أمن","الهكر","اختراق"],"🛡️"),
-        (["design","تصميم"],"🎨"), (["marketing","تسويق"],"📈"),
-        (["maintenance","صيانة","mobile","موبايل"],"🛠️"),
-        (["data","بيانات"],"📚"), (["guide","دليل"],"📘"),
-    ]
-    for keys, emo in pairs:
-        if any(k in t for k in keys): return emo
-    return "📄"
+# قاموس ترجمة للعناوين العربية الشائعة في صورك (للوضع الإنجليزي إذا لم تتوفر title_en)
+TITLE_EN_MAP = {
+    # ---- programming (أمثلة من صورك) ----
+    "تعلّم يونتي Unity": "Learn Unity",
+    "PHP و MySQL": "PHP and MySQL",
+    "تعلم C++ من الصفر خطوة بخطوة": "C++ step by step",
+    "خبير المسار الوظيفي": "Career expert",
+    "لغة البرمجة": "Programming language",
+    "دليل الماتش الكامل": "Maths complete guide",
+    "JavaScript للمبتدئين": "JavaScript for beginners",
+    "علوم الحاسب من الألف إلى الياء": "Computer science from A to Z",
+    "نصائح في بيانات بايثون": "Python data tips",
+    "س/ج تعلم الذكاء الاصطناعي": "ML/DL/DS Q&A",
+    "دخل علمي": "Deep learning PDF",
 
-def make_input_file(path: str):
-    if TG_FSInputFile is not None: return TG_FSInputFile(path)
-    if TG_InputFile is not None:   return TG_InputFile(open(path, "rb"))
-    return open(path, "rb")
+    # ---- design ----
+    "دليل هوية العلامة": "Brand identity guide",
+    "أساسيات التصميم الجرافيكي": "Graphic design basics",
+    "قوالب تصميم شعارات": "Logo design templates",
 
-# ---------- تحميل الكاتالوج ----------
-def load_catalog() -> Dict[str, Any]:
-    with open(CATALOG_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    counts = {sec: len(data.get(sec, [])) for sec in SECTIONS if sec in data}
-    log.info("📘 Using catalog file: %s", CATALOG_PATH)
-    log.info("📦 Catalog on start: %s", counts)
-    return data
+    # ---- security ----
+    "أمن الأجهزة المحمولة": "Security for mobile",
+    "نظام Kali linux": "Kali Linux OS",
+    "أخلاقيات الأمن": "Security ethics",
+    "اختراق الشبكات": "Network hacking",
+    "لينكس للمبتدئين": "Linux for beginners",
+    "الهكر الأخلاقي (سلسلة)": "Ethical hacking (Series)",
+    "الهكر الأخلاقي (سلسلة) — الجزء 1": "Ethical hacking (Series) — Part 1",
+    "الهكر الأخلاقي (سلسلة) — الجزء 2": "Ethical hacking (Series) — Part 2",
+    "الهكر الأخلاقي (سلسلة) — الجزء 3": "Ethical hacking (Series) — Part 3",
+    "الهكر الأخلاقي (سلسلة) — الجزء 4": "Ethical hacking (Series) — Part 4",
+    "اختبار اختراق تطبيقات الويب": "Web app hacking",
 
-CATALOG: Dict[str, Any] = {}
+    # ---- languages ----
+    "١٠٠ محادثة إنجليزية": "100 English conversations",
+    "تحدث الإنجليزية في 10 أيام": "Speak English in 10 days",
+    "إنجليزي مستوى 1": "English level 1",
 
-# ---------- تطبيع الأسماء للبحث المرن ----------
-def norm(s: Optional[str]) -> str:
-    if not s: return ""
-    return re.sub(r"[\W_]+", "", s, flags=re.UNICODE).lower()
+    # ---- marketing ----
+    "دليل العمل الحر": "Freelancing guide",
+    "تسويق عبر النت": "Network marketing",
+    "دليل المنتجات الرقمية": "Sell digital products guide",
+    "دليل السيو": "SEO guide",
+    "مصطلحات التسويق": "Marketing terms",
 
-def resolve_best_file(section: str, path: Optional[str], title: Optional[str]) -> Optional[str]:
-    # 1) مسار صالح مباشرة
-    if path:
-        p = path.strip()
-        if p and p not in {".","./","/","assets","assets/"} and os.path.isfile(p):
-            return p
+    # ---- maintenance ----
+    "مكونات صيانة الجوال": "Mobile maintenance components",
+    "أساسيات صيانة الجوال": "Mobile maintenance basics",
+    "ورشة صيانة الجوال": "Mobile repair workshop",
 
-    # 2) مجلدات مرشّحة
-    dir_candidates: List[str] = []
-    if path and "/" in path:
-        parent = os.path.dirname(path)
-        if parent and os.path.isdir(parent): dir_candidates.append(parent)
-    sec_dir = os.path.join("assets", section)
-    if os.path.isdir(sec_dir) and sec_dir not in dir_candidates:
-        dir_candidates.append(sec_dir)
-    if not dir_candidates:
-        return None
+    # ---- office ----
+    "excel": "excel",
+    "تعلم Microsoft word": "Microsoft Word",
+    "شرح الاكسل خطوة بخطوة": "Excel step by step",
+}
 
-    base = os.path.splitext(os.path.basename(path or ""))[0]
-    nbase = norm(base)
-    ntit  = norm(title or "")
+# تحميل الكاتالوج
+def load_catalog() -> dict:
+    use_path = CATALOG_PATH
+    if not use_path.exists():
+        # دعم المسار القديم إن وجد
+        alt = BASE_DIR / "catalog.json"
+        if alt.exists():
+            use_path = alt
+    log.info("📘 Using catalog file: %s", use_path.relative_to(BASE_DIR))
+    with use_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
-    for d in dir_candidates:
-        try:
-            files = [f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))]
-        except Exception:
-            continue
-        # تطابق تام بعد التطبيع
-        for f in files:
-            if nbase and norm(os.path.splitext(f)[0]) == nbase:
-                return os.path.join(d, f)
-        # تطابق مرن
-        for f in files:
-            stem = norm(os.path.splitext(f)[0])
-            if (nbase and (nbase in stem or stem in nbase)) or (ntit and (ntit == stem or ntit in stem or stem in ntit)):
-                return os.path.join(d, f)
-    return None
+CATALOG = load_catalog()
 
-# ---------- تحقق الاشتراك ----------
-async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if not REQUIRED_CHANNEL: return True
-    user = update.effective_user
-    if not user: return False
-    lang = get_lang(update, context)
+# ----------------------- أدوات لغة/ترجمة -----------------------
+def get_lang(user_id: int) -> str:
+    return USER_LANG.get(user_id, "ar")
+
+def set_lang(user_id: int, lang: str) -> None:
+    USER_LANG[user_id] = "en" if lang == "en" else "ar"
+
+def t(user_id: int, key: str, **kwargs) -> str:
+    lang = get_lang(user_id)
+    return I18N[lang][key].format(**kwargs)
+
+def display_title(raw_title, lang: str) -> str:
+    """يدعم:
+       - title كنص: يحاول ترجمة عبر TITLE_EN_MAP لو lang='en'
+       - أو title ككائن {"ar": "...", "en": "..."}"""
+    if isinstance(raw_title, dict):
+        return raw_title.get(lang) or raw_title.get("ar") or next(iter(raw_title.values()))
+    if lang == "en":
+        return TITLE_EN_MAP.get(str(raw_title).strip(), str(raw_title))
+    return str(raw_title)
+
+# ----------------------- تحقّق الاشتراك -----------------------
+async def ensure_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not REQUIRED_CHANNEL:
+        return True
     try:
-        m = await context.bot.get_chat_member(REQUIRED_CHANNEL, user.id)
-        ok = m.status in ("member","administrator","creator")
-        if not ok:
-            await show_join_prompt(update, context, lang)
-        return ok
+        user = update.effective_user
+        if not user:
+            return False
+        member = await context.bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user.id)
+        status = member.status  # 'creator','administrator','member','left','kicked','restricted'
+        if status in ("member", "administrator", "creator"):
+            return True
     except Exception as e:
         log.warning("membership check failed: %s", e)
-        return True  # لا نمنع بسبب خطأ مؤقت
+    # غير مشترك
+    if update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=t(update.effective_user.id, "must_join"),
+        )
+    return False
 
-async def show_join_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str):
-    txt = T[lang]["not_member_title"]
-    btn_join  = InlineKeyboardButton(T[lang]["join"], url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}")
-    btn_check = InlineKeyboardButton(T[lang]["recheck"], callback_data="recheck")
-    kb = InlineKeyboardMarkup([[btn_join],[btn_check]])
-    if update.callback_query:
-        await update.callback_query.edit_message_text(txt, reply_markup=kb)
-    else:
-        await update.effective_message.reply_text(txt, reply_markup=kb)
-
-# ---------- لوحات الأزرار ----------
-def main_menu_kbd(lang: str) -> InlineKeyboardMarkup:
-    rows, row = [], []
-    for sec in SECTIONS:
-        label = f"{SECTION_EMOJI.get(sec,'📁')} {T[lang]['sections'][sec]}"
-        row.append(InlineKeyboardButton(label, callback_data=f"sec:{sec}"))
-        if len(row) == 2:
-            rows.append(row); row=[]
-    if row: rows.append(row)
+# ----------------------- بناء القوائم -----------------------
+def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
+    lang = get_lang(user_id)
+    rows = []
+    # الأقسام
+    for key in ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]:
+        label_ar = key  # سنعرض مترجم
+        title = {
+            "prog": {"ar": "البرمجة", "en": "Programming"},
+            "design": {"ar": "التصميم", "en": "Design"},
+            "security": {"ar": "الأمن", "en": "Security"},
+            "languages": {"ar": "اللغات", "en": "Languages"},
+            "marketing": {"ar": "التسويق", "en": "Marketing"},
+            "maintenance": {"ar": "الصيانة", "en": "Maintenance"},
+            "office": {"ar": "البرامج المكتبية", "en": "Office apps"},
+        }[key]
+        text = f"{CAT_EMOJI.get(key,'📁')} {display_title(title, lang)}"
+        rows.append([InlineKeyboardButton(text, callback_data=f"cat:{key}")])
+    # سطر اللغة + تواصل
     rows.append([
-        InlineKeyboardButton(T[lang]["choose_lang_button_ar"], callback_data="lang:ar"),
-        InlineKeyboardButton(T[lang]["choose_lang_button_en"], callback_data="lang:en"),
+        InlineKeyboardButton(I18N["ar"]["arabic"], callback_data="lang:ar"),
+        InlineKeyboardButton(I18N["en"]["english"], callback_data="lang:en"),
     ])
-    if OWNER_USERNAME:
-        rows.append([InlineKeyboardButton(T[lang]["contact"], url=f"https://t.me/{OWNER_USERNAME}")])
+    contact_label = t(user_id, "contact")
+    rows.append([InlineKeyboardButton(contact_label, url=t(user_id, "menu_contact_value", admin=OWNER_USERNAME or ''))])
     return InlineKeyboardMarkup(rows)
 
-def items_kbd(items: List[Dict[str, Any]], sec: str, lang: str) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    for i, it in enumerate(items):
-        title = it.get("title","—"); emo = pick_emoji(title)
-        cb = f"children:{sec}:{i}" if "children" in it else f"file:{sec}:{i}"
-        rows.append([InlineKeyboardButton(f"{emo} {title}", callback_data=cb)])
-    rows.append([InlineKeyboardButton(T[lang]["back"], callback_data="back:root")])
+def back_kb(user_id: int, parent: str | None) -> InlineKeyboardMarkup:
+    rows = []
+    if parent:
+        rows.append([InlineKeyboardButton(f"⬅️ {t(user_id, 'back')}", callback_data=f"cat:{parent}")])
+    else:
+        rows.append([InlineKeyboardButton(f"🏠 {t(user_id, 'back')}", callback_data="home")])
     return InlineKeyboardMarkup(rows)
 
-def children_kbd(children: List[Dict[str, Any]], sec: str, idx: int, lang: str) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    for j, ch in enumerate(children):
-        title = ch.get("title","—"); emo = pick_emoji(title)
-        rows.append([InlineKeyboardButton(f"{emo} {title}", callback_data=f"cfile:{sec}:{idx}:{j}")])
-    rows.append([InlineKeyboardButton(T[lang]["back"], callback_data=f"back:sec:{sec}")])
+def section_kb(user_id: int, cat_key: str) -> InlineKeyboardMarkup:
+    lang = get_lang(user_id)
+    items = CATALOG.get(cat_key, [])
+    rows = []
+    for item in items:
+        # عنصر عادي أو مجموعة (children)
+        title = display_title(item.get("title"), lang)
+        emoji = "📄"
+        if "children" in item:
+            series_word = I18N[lang]["series"]
+            title = f"{title} ({series_word})"
+            emoji = "📚"
+            rows.append([InlineKeyboardButton(f"{emoji} {title}", callback_data=f"group:{cat_key}:{title}")])
+        else:
+            rows.append([InlineKeyboardButton(f"{emoji} {title}", callback_data=f"book:{item['path']}")])
+    # زر رجوع
+    rows.append([InlineKeyboardButton(f"⬅️ {t(user_id,'back')}", callback_data="home")])
     return InlineKeyboardMarkup(rows)
 
-# ---------- أوامر ----------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # إذا لم تُحدَّد لغة من قبل، اطلب الاختيار أولاً
-    lang = get_lang(update, context)
-    if "lang" not in context.user_data:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(T["ar"]["choose_lang_button_ar"], callback_data="lang:ar"),
-            InlineKeyboardButton(T["en"]["choose_lang_button_en"], callback_data="lang:en"),
-        ]])
-        await update.message.reply_text(T["ar"]["lang_prompt"] + "\n" + T["en"]["lang_prompt"], reply_markup=kb)
+def series_kb(user_id: int, cat_key: str, group_title_ar: str, children: list[dict]) -> InlineKeyboardMarkup:
+    lang = get_lang(user_id)
+    rows = []
+    # نعرض الأجزاء
+    for idx, ch in enumerate(children, start=1):
+        ch_title = display_title(ch.get("title") or f"الجزء {idx}", lang)
+        rows.append([InlineKeyboardButton(f"📘 {ch_title}", callback_data=f"book:{ch['path']}")])
+    rows.append([InlineKeyboardButton(f"⬅️ {t(user_id,'back')}", callback_data=f"cat:{cat_key}")])
+    return InlineKeyboardMarkup(rows)
+
+# ----------------------- Handlers -----------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_membership(update, context):
         return
-    if not await ensure_member(update, context): return
-    await update.message.reply_text(T[lang]["start_title"], reply_markup=main_menu_kbd(lang))
+    user_id = update.effective_user.id
+    # لا تغيّر لغته إن كانت مضبوطة—فقط اعرض القائمة
+    text = t(user_id, "home_title")
+    await update.effective_chat.send_message(text, reply_markup=main_menu_kb(user_id))
 
-async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = get_lang(update, context)
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(T[lang]["choose_lang_button_ar"], callback_data="lang:ar"),
-        InlineKeyboardButton(T[lang]["choose_lang_button_en"], callback_data="lang:en"),
-    ]])
-    await update.message.reply_text(T[lang]["lang_prompt"], reply_markup=kb)
-
-async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CATALOG
-    CATALOG = load_catalog()
-    lang = get_lang(update, context)
-    await update.message.reply_text(T[lang]["reloaded"])
-
-async def cmd_where(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = get_lang(update, context)
-    if not context.args:
-        await update.message.reply_text("usage: /where <section>"); return
-    sec = context.args[0]
-    arr = CATALOG.get(sec, [])
-    lines = [f"• {x.get('title')} -> {x.get('path','children')}" for x in arr]
-    await update.message.reply_text("\n".join(lines) or ("empty" if lang=="en" else "فارغ"))
-
-# ---------- Callback ----------
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def lang_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data or ""
+    _, lang = q.data.split(":")
+    set_lang(q.from_user.id, lang)
+    await q.edit_message_text(
+        t(q.from_user.id, "home_title"),
+        reply_markup=main_menu_kb(q.from_user.id),
+    )
 
-    # احصل على اللغة الحالية دائمًا من التخزين
-    lang = get_lang(update, context)
+async def to_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(
+        t(q.from_user.id, "home_title"),
+        reply_markup=main_menu_kb(q.from_user.id),
+    )
 
-    if data.startswith("lang:"):
-        _, pick = data.split(":", 1)
-        set_lang(update, context, pick)
-        lang = pick
-        await q.edit_message_text(T[lang]["start_title"], reply_markup=main_menu_kbd(lang))
+async def open_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_membership(update, context):
         return
+    q = update.callback_query
+    await q.answer()
+    _, cat = q.data.split(":")
+    kb = section_kb(q.from_user.id, cat)
+    # عنوان القسم بحسب اللغة
+    lang = get_lang(q.from_user.id)
+    title_map = {
+        "prog": {"ar": "البرمجة", "en": "Programming"},
+        "design": {"ar": "التصميم", "en": "Design"},
+        "security": {"ar": "الأمن", "en": "Security"},
+        "languages": {"ar": "اللغات", "en": "Languages"},
+        "marketing": {"ar": "التسويق", "en": "Marketing"},
+        "maintenance": {"ar": "الصيانة", "en": "Maintenance"},
+        "office": {"ar": "البرامج المكتبية", "en": "Office apps"},
+    }
+    head = f"{CAT_EMOJI.get(cat,'📁')} {display_title(title_map[cat], lang)}"
+    await q.edit_message_text(head, reply_markup=kb)
 
-    if data == "recheck":
-        if await ensure_member(update, context):
-            await q.edit_message_text(T[lang]["start_title"], reply_markup=main_menu_kbd(lang))
+async def open_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    _, cat, group_title_encoded = q.data.split(":", 2)
+    # العثور على المجموعة
+    group = None
+    for item in CATALOG.get(cat, []):
+        if "children" in item:
+            # نقارن بالعنوان بالعربي أو بالإنجليزي
+            title_ar = display_title(item["title"], "ar")
+            title_en = display_title(item["title"], "en")
+            if group_title_encoded in (title_ar, f"{title_en} (Series)", title_en, f"{title_ar} (سلسلة)"):
+                group = item
+                break
+    if not group:
+        await q.edit_message_reply_markup(reply_markup=back_kb(q.from_user.id, cat))
         return
+    kb = series_kb(q.from_user.id, cat, display_title(group["title"], "ar"), group["children"])
+    await q.edit_message_text(
+        f"📚 {display_title(group['title'], get_lang(q.from_user.id))}",
+        reply_markup=kb
+    )
 
-    if not await ensure_member(update, context): return
-
-    if data == "back:root":
-        await q.edit_message_text(T[lang]["start_title"], reply_markup=main_menu_kbd(lang))
+async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await ensure_membership(update, context):
         return
-
-    if data.startswith("back:sec:"):
-        _, _, sec = data.split(":", 2)
-        items = CATALOG.get(sec, [])
-        await q.edit_message_text(f"{SECTION_EMOJI.get(sec,'📁')} {T[lang]['sections'][sec]}",
-                                  reply_markup=items_kbd(items, sec, lang))
+    q = update.callback_query
+    await q.answer()
+    _, rel_path = q.data.split(":", 1)
+    fs_path = ASSETS_DIR / Path(rel_path).relative_to("assets")
+    if not fs_path.exists():
+        log.warning("Missing file: %s", rel_path)
+        await q.edit_message_text(
+            t(q.from_user.id, "not_found", path=rel_path),
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_kb(q.from_user.id, None),
+        )
         return
+    try:
+        with fs_path.open("rb") as f:
+            await context.bot.send_document(
+                chat_id=q.message.chat_id,
+                document=InputFile(f, filename=fs_path.name),
+                caption=fs_path.name,
+            )
+    except Exception as e:
+        log.error("Failed to send %s: %s", rel_path, e)
+    # لا نغير الرسالة الأصلية؛ فقط نجيب الملف
 
-    if data.startswith("sec:"):
-        _, sec = data.split(":", 1)
-        items = CATALOG.get(sec, [])
-        await q.edit_message_text(f"{SECTION_EMOJI.get(sec,'📁')} {T[lang]['sections'][sec]}",
-                                  reply_markup=items_kbd(items, sec, lang))
+async def reload_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if OWNER_USERNAME and update.effective_user.username != OWNER_USERNAME:
         return
+    global CATALOG
+    CATALOG = load_catalog()
+    # إحصاء
+    catalog_count = {k: len(v) for k, v in CATALOG.items()}
+    await update.message.reply_text(f"✅ تم إعادة تحميل الكاتالوج:\nحالة المحتوى:\n{catalog_count}")
 
-    if data.startswith("file:"):
-        _, sec, idx_s = data.split(":", 2)
-        items = CATALOG.get(sec, [])
-        try:
-            idx = int(idx_s)
-        except ValueError:
-            await q.message.reply_text(T[lang]["unknown"]); return
-        it = items[idx] if 0 <= idx < len(items) else None
-        if not it:
-            await q.message.reply_text(T[lang]["unknown"]); return
-
-        path  = it.get("path"); title = it.get("title","—")
-        real  = resolve_best_file(sec, path, title)
-        if not real:
-            log.warning("Missing/invalid file: %r", path)
-            await q.message.reply_text(T[lang]["missing"].format(path=str(path)), parse_mode=ParseMode.HTML)
-            return
-        await q.message.reply_document(document=make_input_file(real), caption=f"{pick_emoji(title)} {title}")
-        return
-
-    if data.startswith("children:"):
-        _, sec, idx_s = data.split(":", 2)
-        items = CATALOG.get(sec, [])
-        try:
-            idx = int(idx_s)
-        except ValueError:
-            await q.message.reply_text(T[lang]["unknown"]); return
-        it = items[idx] if 0 <= idx < len(items) else None
-        children = it.get("children", []) if it else []
-        await q.edit_message_text(T[lang]["children_title"], reply_markup=children_kbd(children, sec, idx, lang))
-        return
-
-    if data.startswith("cfile:"):
-        _, sec, pi_s, ci_s = data.split(":", 3)
-        items = CATALOG.get(sec, [])
-        try:
-            pi = int(pi_s); ci = int(ci_s)
-        except ValueError:
-            await q.message.reply_text(T[lang]["unknown"]); return
-        parent = items[pi] if 0 <= pi < len(items) else None
-        child  = (parent.get("children") or [])[ci] if parent else None
-        if not child:
-            await q.message.reply_text(T[lang]["unknown"]); return
-
-        path  = child.get("path"); title = child.get("title","—")
-        real  = resolve_best_file(sec, path, title)
-        if not real:
-            log.warning("Missing/invalid file (child): %r", path)
-            await q.message.reply_text(T[lang]["missing"].format(path=str(path)), parse_mode=ParseMode.HTML)
-            return
-        await q.message.reply_document(document=make_input_file(real), caption=f"{pick_emoji(title)} {title}")
-        return
-
-# ---------- Health ----------
-class _Health(BaseHTTPRequestHandler):
+# ----------------------- Health server -----------------------
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz":
-            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"ok")
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b".")
 
-def _run_health():
-    srv = HTTPServer((HEALTH_HOST, HEALTH_PORT), _Health)
-    log.info("🌐 Health server on %s:%s", HEALTH_HOST, HEALTH_PORT)
-    srv.serve_forever()
+def run_health_server():
+    port = int(os.getenv("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    log.info("🌐 Health server on 0.0.0.0:%d", port)
+    server.serve_forever()
 
-# ---------- main ----------
+# ----------------------- main -----------------------
 def main():
-    global CATALOG
-    if not TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN is missing")
-    CATALOG = load_catalog()
-    threading.Thread(target=_run_health, daemon=True).start()
-
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("lang",  cmd_lang))
-    app.add_handler(CommandHandler("reload", cmd_reload))
-    app.add_handler(CommandHandler("where",  cmd_where))
-    app.add_handler(CallbackQueryHandler(on_callback))
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reload", reload_catalog))
+
+    app.add_handler(CallbackQueryHandler(lang_switch, pattern=r"^lang:(ar|en)$"))
+    app.add_handler(CallbackQueryHandler(to_home, pattern=r"^home$"))
+    app.add_handler(CallbackQueryHandler(open_category, pattern=r"^cat:(.+)$"))
+    app.add_handler(CallbackQueryHandler(open_group, pattern=r"^group:.+"))
+    app.add_handler(CallbackQueryHandler(send_book, pattern=r"^book:.+"))
+
+    # شغّل healthz في ثريد منفصل
+    import threading
+    threading.Thread(target=run_health_server, daemon=True).start()
 
     log.info("🤖 Telegram bot starting…")
     app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
     main()
+
 
 
 
