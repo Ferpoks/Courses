@@ -26,6 +26,7 @@
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
     { "title": "لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
     { "title": "عالم الهكر", "path": "assets/security/Hacker_world.pdf" },
+    { "title": "مقدمة في الامن السيبراني", "path": "assets/security/Cybersecurity.pdf" },
 
     {
       "title": "الهكر الأخلاقي (سلسلة)",
