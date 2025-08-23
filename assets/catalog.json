@@ -25,6 +25,7 @@
     { "title": "اخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
     { "title": "لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
+    { "title": "عالم الهكر", "path": "assets/security/Hacker_world.pdf" },
 
     {
       "title": "الهكر الأخلاقي (سلسلة)",
