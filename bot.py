@@ -37,16 +37,17 @@ logging.basicConfig(
 )
 log = logging.getLogger("courses-bot")
 
-# لغة المستخدم
-USER_LANG: dict[int, str] = {}  # user_id -> 'ar' | 'en'
-# رسالة القائمة (لنتحكم بها من أزرار اللوحة السفلية)
-MENU_MSG: dict[int, tuple[int, int]] = {}  # user_id -> (chat_id, message_id)
+# لغة المستخدم وحالة إرسال لوحة المفاتيح
+USER_LANG: dict[int, str] = {}          # user_id -> 'ar' | 'en'
+KB_SENT: set[int] = set()               # users الذين أرسِلَت لهم اللوحة السفلية
+MENU_MSG: dict[int, tuple[int, int]] = {}  # user_id -> (chat_id, message_id) لرسالة القائمة القابلة للتعديل
 
+# نصوص الواجهات
 L = {
     "ar": {
         "welcome": "مرحبًا بك في مكتبة الكورسات 📚\nاختر القسم:",
         "back": "رجوع",
-        "contact": "قناة المطور 🧑‍💻",
+        "contact": "المطور 🧑‍💻",
         "contact_short": "تواصل مع الإدارة",
         "must_join": "الرجاء الاشتراك في القناة أولًا ثم اضغط ✅ تم الاشتراك",
         "joined": "✅ تم التحقق — يمكنك المتابعة الآن.",
@@ -74,7 +75,7 @@ L = {
     "en": {
         "welcome": "Welcome to the courses library 📚\nPick a category:",
         "back": "Back",
-        "contact": "Developer channel 🧑‍💻",
+        "contact": "Admin 🧑‍💻",
         "contact_short": "Contact admin",
         "must_join": "Please join the channel first, then press ✅ Joined",
         "joined": "✅ Verified — you can continue.",
@@ -244,17 +245,74 @@ async def ensure_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # لو فشل الاستعلام لأي سبب، نسمح
         return True
 
+# ===================== حل ذكي لمسارات الملفات =====================
+def _norm(s: str) -> str:
+    # إزالة كل شيء غير حروف/أرقام، وتحويل لصغير
+    return "".join(ch.lower() for ch in s if ch.isalnum())
+
+def resolve_relaxed(rel_path: str) -> Path | None:
+    """
+    يحاول العثور على الملف حتى لو اختلفت المسافات/الشرطات/الحروف/الامتداد.
+    لا يغيّر أي أسماء فعلية — فقط يبحث بذكاء.
+    """
+    rel_path = rel_path.strip().replace("\\", "/")
+    p = (BASE_DIR / rel_path).resolve()
+    if p.exists():
+        return p
+
+    # الهدف
+    target = Path(rel_path)
+    target_dir = (BASE_DIR / target.parent).resolve()
+    target_stem_norm = _norm(target.stem)
+
+    # أماكن محتملة للبحث
+    search_dirs = []
+    if target_dir.exists():
+        search_dirs.append(target_dir)
+    assets_dir = BASE_DIR / "assets" / target.parent.name
+    if assets_dir.exists() and assets_dir not in search_dirs:
+        search_dirs.append(assets_dir)
+    just_assets = BASE_DIR / "assets"
+    if just_assets.exists() and just_assets not in search_dirs:
+        search_dirs.append(just_assets)
+
+    # لو الامتداد غير موجود أو مختلف — جرّب كل المسموح
+    for d in search_dirs:
+        try:
+            for f in d.iterdir():
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() not in ALLOWED_EXTS:
+                    continue
+                if _norm(f.stem) == target_stem_norm:
+                    return f.resolve()
+        except Exception:
+            continue
+
+    # بحث شامل أخير داخل assets
+    try:
+        for f in (BASE_DIR / "assets").rglob("*"):
+            if f.is_file() and f.suffix.lower() in ALLOWED_EXTS:
+                if _norm(f.stem) == target_stem_norm:
+                    return f.resolve()
+    except Exception:
+        pass
+
+    return None
+
 # ===================== إرسال الملفات =====================
 async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE, rel_path: str):
-    fs_path = (BASE_DIR / rel_path).resolve()
+    fs_path = resolve_relaxed(rel_path)
+    if not fs_path:
+        log.warning("Missing file (relaxed not found): %s", rel_path)
+        await update.effective_message.reply_text(L[ulang(update)]["missing"] + rel_path)
+        return
+    # حماية إضافية من الخروج عن المجلد
     if not str(fs_path).startswith(str(BASE_DIR)):
-        log.warning("Blocked path traversal: %s", rel_path)
+        log.warning("Blocked path traversal: %s -> %s", rel_path, fs_path)
         await update.effective_message.reply_text(L[ulang(update)]["missing"] + rel_path)
         return
-    if not fs_path.exists():
-        log.warning("Missing file: %s", rel_path)
-        await update.effective_message.reply_text(L[ulang(update)]["missing"] + rel_path)
-        return
+
     try:
         with fs_path.open("rb") as f:
             await context.bot.send_document(
@@ -276,7 +334,6 @@ async def ensure_menu_exists(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = update.effective_user.id
     pair = get_menu_message(uid)
     if not pair:
-        # أنشئ رسالة القائمة الأولى
         msg = await update.effective_message.reply_text(
             t(update, "welcome"),
             reply_markup=main_menu_inline(update),
@@ -299,26 +356,29 @@ async def menu_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, text: st
             reply_markup=kb,
         )
     except Exception:
-        # لو فشل (محذوفة مثلاً) أرسل جديدة وخزّنها
         msg = await update.effective_message.reply_text(text, reply_markup=kb)
         await set_menu_message(uid, msg.chat.id, msg.message_id)
 
 # ===================== أوامر ومعالجات =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    USER_LANG.setdefault(update.effective_user.id, USER_LANG.get(update.effective_user.id, "ar"))
+    uid = update.effective_user.id
+    USER_LANG.setdefault(uid, USER_LANG.get(uid, "ar"))
     if not await ensure_membership(update, context):
         return
-    # لوحة سفلية + تجهيز رسالة القائمة الواحدة
-    await update.effective_message.reply_text(
-        t(update, "welcome"),
-        reply_markup=bottom_keyboard(update),
-    )
+
+    # أرسل اللوحة السفلية مرة واحدة فقط
+    if uid not in KB_SENT:
+        KB_SENT.add(uid)
+        await update.effective_message.reply_text(
+            t(update, "welcome"),
+            reply_markup=bottom_keyboard(update),
+        )
+
+    # جهّز رسالة القائمة القابلة للتعديل
     await ensure_menu_exists(update, context)
-    # تحديث رسالة القائمة إلى القائمة الرئيسية
     await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # الآن الهلب = تواصل مع الإدارة
     if not await ensure_membership(update, context):
         return
     if OWNER_USERNAME:
@@ -338,7 +398,6 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         CATALOG = load_catalog()
         await update.effective_message.reply_text("✅ تم إعادة تحميل الكاتالوج.")
-        # حدث رسالة القائمة الرئيسية بعد الإعادة
         await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
     except Exception as e:
         await update.effective_message.reply_text(f"❌ خطأ في إعادة التحميل: {e}")
@@ -351,7 +410,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = (q.data or "")
     kind, _, rest = data.partition("|")
 
-    # حدّث مؤشر رسالة القائمة (حتى لو تبدلت)
     await set_menu_message(update.effective_user.id, q.message.chat.id, q.message.message_id)
 
     if kind == "verify":
@@ -384,7 +442,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_book(update, context, rest)
         return
 
-# خرائط عناوين الأقسام (لللوحة السفلية)
 def label_to_section_map(lang: str) -> dict[str, str]:
     return {v: k for k, v in L[lang]["sections"].items()}
 
@@ -395,7 +452,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = USER_LANG.get(uid, "ar")
 
-    # القسم المختار من اللوحة السفلية → حرّك رسالة القائمة (Inline) بدل إنشاء رسالة جديدة
     for l in ("ar", "en"):
         sec_map = label_to_section_map(l)
         if text in sec_map:
@@ -403,18 +459,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await menu_edit(update, context, section_label(update, key), build_section_kb(key, update))
             return
 
-    # تغيير اللغة (زر سُفلي)
     if text == L[lang]["change_language"]:
         USER_LANG[uid] = ("en" if lang == "ar" else "ar")
-        await update.effective_message.reply_text(
-            t(update, "welcome"),
-            reply_markup=bottom_keyboard(update),
-        )
-        # حدث رسالة القائمة أيضًا
+        # لا نرسل لوحة جديدة إذا كانت أُرسلت سابقًا
+        if uid not in KB_SENT:
+            KB_SENT.add(uid)
+            await update.effective_message.reply_text(
+                t(update, "welcome"),
+                reply_markup=bottom_keyboard(update),
+            )
         await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
         return
 
-    # تواصل مع الإدارة (زر سُفلي)
     if text == L[lang]["contact_short"] or text == L[lang]["help"]:
         if OWNER_USERNAME:
             await update.effective_message.reply_text(
@@ -429,7 +485,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Start / معلوماتي / الترحيب
     if text == L[lang]["start"]:
         await cmd_start(update, context); return
 
@@ -452,7 +507,7 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))  # الآن help = تواصل مع الإدارة
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
