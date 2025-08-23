@@ -55,8 +55,8 @@
 
   "maintenance": [
   { "title": "مكوّنات صيانة الجوال", "path": "assets/maintenance/mobile_maintenance_components.pdf" },
-  { "title": "أساسيات صيانة الجوال", "path": "assets/maintenance/كتاب صيانة الجوال.pdf" },
-  { "title": "ورشة صيانة الجوال", "path": "assets/maintenance/كتاب صيانة الجوال(2).pdf" }
+  { "title": "أساسيات صيانة الجوال", "path": "assets/maintenance/(2)كتاب صيانة الجوال.pdf" },
+  { "title": "ورشة صيانة الجوال", "path": "assets/maintenance/كتاب صيانة الجوال(1).pdf" }
   ],
 
   "office": [
