@@ -39,6 +39,8 @@ log = logging.getLogger("courses-bot")
 
 # لغة المستخدم
 USER_LANG: dict[int, str] = {}  # user_id -> 'ar' | 'en'
+# رسالة القائمة (لنتحكم بها من أزرار اللوحة السفلية)
+MENU_MSG: dict[int, tuple[int, int]] = {}  # user_id -> (chat_id, message_id)
 
 L = {
     "ar": {
@@ -56,7 +58,7 @@ L = {
         "help": "🆘 Help",
         "myinfo": "🪪 معلوماتي",
         "greet": "👋 الترحيب",
-        "help_text": "أرسل زر أي قسم من الأسفل لعرض محتواه.\nاستعمل /reload لإعادة تحميل الكتالوج (للمالك).",
+        "help_text_contact": "للتواصل مع الإدارة:",
         "greet_text": "أهلًا وسهلًا! استمتع بالتصفح 🤍",
         "info_fmt": "اسم: {name}\nيوزر: @{user}\nمعرّف: {uid}\nاللغة: {lang}",
         "sections": {
@@ -84,7 +86,7 @@ L = {
         "help": "🆘 Help",
         "myinfo": "🪪 My info",
         "greet": "👋 Welcome",
-        "help_text": "Tap a section below to browse its content.\nUse /reload to reload catalog (owner).",
+        "help_text_contact": "Contact the admin:",
         "greet_text": "Hi there! Enjoy browsing 🤍",
         "info_fmt": "Name: {name}\nUser: @{user}\nUser ID: {uid}\nLang: {lang}",
         "sections": {
@@ -99,7 +101,6 @@ L = {
     },
 }
 
-# الملفات المسموح إرسالها كما هي
 ALLOWED_EXTS = {".pdf", ".zip", ".rar"}
 
 # ===================== تحميل الكتالوج =====================
@@ -151,7 +152,6 @@ def section_label(update: Update, key: str) -> str:
     return L[ulang(update)]["sections"].get(key, key)
 
 def bottom_keyboard(update: Update) -> ReplyKeyboardMarkup:
-    # كل الأقسام في لوحة سفلية ثابتة
     s = L[ulang(update)]["sections"]
     rows = [
         [KeyboardButton(s["prog"]), KeyboardButton(s["design"])],
@@ -167,8 +167,13 @@ def bottom_keyboard(update: Update) -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
+def contact_inline_button(update: Update):
+    if OWNER_USERNAME:
+        return InlineKeyboardButton(L[ulang(update)]["contact"],
+                                    url=f"https://t.me/{OWNER_USERNAME}")
+    return None
+
 def main_menu_inline(update: Update) -> InlineKeyboardMarkup:
-    # Inline بسيط لو أحببت
     order = ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]
     rows, row = [], []
     for key in order:
@@ -177,25 +182,15 @@ def main_menu_inline(update: Update) -> InlineKeyboardMarkup:
             if len(row) == 2:
                 rows.append(row); row = []
     if row: rows.append(row)
-    # لغة + تواصل
     lang_row = [
         InlineKeyboardButton("🇸🇦 عربي", callback_data="lang|ar"),
         InlineKeyboardButton("🇬🇧 English", callback_data="lang|en"),
     ]
     rows.append(lang_row)
-    contact_btn = contact_inline_button(update)
-    if contact_btn:
-        rows.append([contact_btn])
+    btn = contact_inline_button(update)
+    if btn:
+        rows.append([btn])
     return InlineKeyboardMarkup(rows)
-
-def contact_inline_button(update: Update):
-    if OWNER_USERNAME:
-        return InlineKeyboardButton(L[ulang(update)]["contact"],
-                                    url=f"https://t.me/{OWNER_USERNAME}")
-    return None
-
-def back_kb(update: Update) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(L[ulang(update)]["back"], callback_data="back|main")]])
 
 def build_section_kb(section: str, update: Update) -> InlineKeyboardMarkup:
     items = CATALOG.get(section, [])
@@ -270,35 +265,81 @@ async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE, rel_path
         log.error("Failed to send %s: %s", fs_path, e, exc_info=True)
         await update.effective_message.reply_text(L[ulang(update)]["missing"] + rel_path)
 
+# ===================== أدوات التحكم برسالة القائمة =====================
+async def set_menu_message(user_id: int, chat_id: int, message_id: int):
+    MENU_MSG[user_id] = (chat_id, message_id)
+
+def get_menu_message(user_id: int):
+    return MENU_MSG.get(user_id)
+
+async def ensure_menu_exists(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    pair = get_menu_message(uid)
+    if not pair:
+        # أنشئ رسالة القائمة الأولى
+        msg = await update.effective_message.reply_text(
+            t(update, "welcome"),
+            reply_markup=main_menu_inline(update),
+        )
+        await set_menu_message(uid, msg.chat.id, msg.message_id)
+
+async def menu_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, kb: InlineKeyboardMarkup):
+    uid = update.effective_user.id
+    pair = get_menu_message(uid)
+    if not pair:
+        msg = await update.effective_message.reply_text(text, reply_markup=kb)
+        await set_menu_message(uid, msg.chat.id, msg.message_id)
+        return
+    chat_id, msg_id = pair
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=text,
+            reply_markup=kb,
+        )
+    except Exception:
+        # لو فشل (محذوفة مثلاً) أرسل جديدة وخزّنها
+        msg = await update.effective_message.reply_text(text, reply_markup=kb)
+        await set_menu_message(uid, msg.chat.id, msg.message_id)
+
 # ===================== أوامر ومعالجات =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     USER_LANG.setdefault(update.effective_user.id, USER_LANG.get(update.effective_user.id, "ar"))
     if not await ensure_membership(update, context):
         return
+    # لوحة سفلية + تجهيز رسالة القائمة الواحدة
     await update.effective_message.reply_text(
         t(update, "welcome"),
         reply_markup=bottom_keyboard(update),
     )
-    # عرض قائمة Inline اختيارية أعلى المحادثة
-    await update.effective_message.reply_text(
-        t(update, "welcome"),
-        reply_markup=main_menu_inline(update),
-    )
+    await ensure_menu_exists(update, context)
+    # تحديث رسالة القائمة إلى القائمة الرئيسية
+    await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # الآن الهلب = تواصل مع الإدارة
     if not await ensure_membership(update, context):
         return
-    await update.effective_message.reply_text(
-        L[ulang(update)]["help_text"],
-        reply_markup=bottom_keyboard(update),
-    )
+    if OWNER_USERNAME:
+        await update.effective_message.reply_text(
+            f"{L[ulang(update)]['help_text_contact']} https://t.me/{OWNER_USERNAME}",
+            reply_markup=bottom_keyboard(update),
+            disable_web_page_preview=True,
+        )
+    else:
+        await update.effective_message.reply_text(
+            "ضع OWNER_USERNAME في متغيرات البيئة لتمكين رابط التواصل.",
+            reply_markup=bottom_keyboard(update),
+        )
 
 async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # يمكن للجميع؛ عدّل إن رغبت
     global CATALOG
     try:
         CATALOG = load_catalog()
         await update.effective_message.reply_text("✅ تم إعادة تحميل الكاتالوج.")
+        # حدث رسالة القائمة الرئيسية بعد الإعادة
+        await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
     except Exception as e:
         await update.effective_message.reply_text(f"❌ خطأ في إعادة التحميل: {e}")
 
@@ -310,48 +351,40 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = (q.data or "")
     kind, _, rest = data.partition("|")
 
+    # حدّث مؤشر رسالة القائمة (حتى لو تبدلت)
+    await set_menu_message(update.effective_user.id, q.message.chat.id, q.message.message_id)
+
     if kind == "verify":
-        await q.edit_message_text(L[ulang(update)]["joined"])
+        await q.edit_message_text(t(update, "welcome"), reply_markup=main_menu_inline(update))
         await update.effective_message.reply_text(
-            t(update, "welcome"), reply_markup=bottom_keyboard(update)
+            L[ulang(update)]["joined"], reply_markup=bottom_keyboard(update)
         )
         return
 
     if kind == "lang":
         USER_LANG[update.effective_user.id] = "ar" if rest == "ar" else "en"
-        await q.edit_message_text(
-            t(update, "welcome"), reply_markup=main_menu_inline(update)
-        )
-        await update.effective_message.reply_text(
-            t(update, "welcome"), reply_markup=bottom_keyboard(update)
-        )
+        await q.edit_message_text(t(update, "welcome"), reply_markup=main_menu_inline(update))
         return
 
     if kind == "back" and rest == "main":
-        await q.edit_message_text(
-            t(update, "welcome"), reply_markup=main_menu_inline(update)
-        )
+        await q.edit_message_text(t(update, "welcome"), reply_markup=main_menu_inline(update))
         return
 
     if kind == "cat":
         section = rest
-        await q.edit_message_text(
-            section_label(update, section), reply_markup=build_section_kb(section, update)
-        )
+        await q.edit_message_text(section_label(update, section), reply_markup=build_section_kb(section, update))
         return
 
     if kind == "series":
         section = rest
-        await q.edit_message_text(
-            section_label(update, section), reply_markup=build_series_kb(section, update)
-        )
+        await q.edit_message_text(section_label(update, section), reply_markup=build_series_kb(section, update))
         return
 
     if kind == "file":
         await send_book(update, context, rest)
         return
 
-# استقبال ضغطات اللوحة السفلية
+# خرائط عناوين الأقسام (لللوحة السفلية)
 def label_to_section_map(lang: str) -> dict[str, str]:
     return {v: k for k, v in L[lang]["sections"].items()}
 
@@ -362,30 +395,30 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     lang = USER_LANG.get(uid, "ar")
 
-    # الأقسام
+    # القسم المختار من اللوحة السفلية → حرّك رسالة القائمة (Inline) بدل إنشاء رسالة جديدة
     for l in ("ar", "en"):
         sec_map = label_to_section_map(l)
         if text in sec_map:
             key = sec_map[text]
-            await update.effective_message.reply_text(
-                section_label(update, key), reply_markup=build_section_kb(key, update)
-            )
+            await menu_edit(update, context, section_label(update, key), build_section_kb(key, update))
             return
 
-    # تغيير اللغة
+    # تغيير اللغة (زر سُفلي)
     if text == L[lang]["change_language"]:
         USER_LANG[uid] = ("en" if lang == "ar" else "ar")
         await update.effective_message.reply_text(
             t(update, "welcome"),
             reply_markup=bottom_keyboard(update),
         )
+        # حدث رسالة القائمة أيضًا
+        await menu_edit(update, context, t(update, "welcome"), main_menu_inline(update))
         return
 
-    # تواصل مع الإدارة
-    if text == L[lang]["contact_short"]:
+    # تواصل مع الإدارة (زر سُفلي)
+    if text == L[lang]["contact_short"] or text == L[lang]["help"]:
         if OWNER_USERNAME:
             await update.effective_message.reply_text(
-                f"https://t.me/{OWNER_USERNAME}",
+                f"{L[ulang(update)]['help_text_contact']} https://t.me/{OWNER_USERNAME}",
                 reply_markup=bottom_keyboard(update),
                 disable_web_page_preview=True,
             )
@@ -396,12 +429,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Start / Help / معلوماتي / الترحيب
+    # Start / معلوماتي / الترحيب
     if text == L[lang]["start"]:
         await cmd_start(update, context); return
-
-    if text == L[lang]["help"]:
-        await cmd_help(update, context); return
 
     if text == L[lang]["myinfo"]:
         name = (update.effective_user.full_name or "-")
@@ -422,7 +452,7 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("help", cmd_help))  # الآن help = تواصل مع الإدارة
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
