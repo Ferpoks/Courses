@@ -20,7 +20,7 @@
   ],
 
   "security": [
-    { "title": "أمن الأجهزة المحمولة", "path": "assets/security/ai_for_mobile.pdf" },
+    { "title": "الذكاء الاصطناعي للهاتف", "path": "assets/security/ai_for_mobile.pdf" },
     { "title": "كالي لينكس OS", "path": "assets/security/kali_linux_os.pdf" },
     { "title": "اخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
