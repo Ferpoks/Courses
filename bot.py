@@ -18,11 +18,12 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
+from telegram.error import Forbidden, BadRequest
 
 # ----------------------- إعدادات أساسية -----------------------
 TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "")  # مثال: @my_channel
+REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL", "") or "").strip()  # مثال: @my_channel
 BASE_DIR = Path(__file__).parent
 CATALOG_PATH = BASE_DIR / "assets" / "catalog.json"
 ASSETS_DIR = BASE_DIR / "assets"
@@ -48,6 +49,7 @@ I18N = {
         "must_join": "للاستخدام يجب الاشتراك في القناة أولاً ثم اضغط /start",
         "menu_contact_value": "https://t.me/{admin}",
         "series": "سلسلة",
+        "join_btn": "الانضمام للقناة 📣",
     },
     "en": {
         "home_title": "Welcome to the courses library 📚\nPick a category:",
@@ -59,6 +61,7 @@ I18N = {
         "must_join": "Please join the channel first, then press /start.",
         "menu_contact_value": "https://t.me/{admin}",
         "series": "Series",
+        "join_btn": "Join channel 📣",
     },
 }
 
@@ -73,9 +76,8 @@ CAT_EMOJI = {
     "office": "📁",
 }
 
-# قاموس ترجمة للعناوين العربية الشائعة في صورك (للوضع الإنجليزي إذا لم تتوفر title_en)
+# قاموس ترجمة لعناوين عربية شائعة عند اختيار English
 TITLE_EN_MAP = {
-    # ---- programming (أمثلة من صورك) ----
     "تعلّم يونتي Unity": "Learn Unity",
     "PHP و MySQL": "PHP and MySQL",
     "تعلم C++ من الصفر خطوة بخطوة": "C++ step by step",
@@ -88,12 +90,10 @@ TITLE_EN_MAP = {
     "س/ج تعلم الذكاء الاصطناعي": "ML/DL/DS Q&A",
     "دخل علمي": "Deep learning PDF",
 
-    # ---- design ----
     "دليل هوية العلامة": "Brand identity guide",
     "أساسيات التصميم الجرافيكي": "Graphic design basics",
     "قوالب تصميم شعارات": "Logo design templates",
 
-    # ---- security ----
     "أمن الأجهزة المحمولة": "Security for mobile",
     "نظام Kali linux": "Kali Linux OS",
     "أخلاقيات الأمن": "Security ethics",
@@ -106,44 +106,34 @@ TITLE_EN_MAP = {
     "الهكر الأخلاقي (سلسلة) — الجزء 4": "Ethical hacking (Series) — Part 4",
     "اختبار اختراق تطبيقات الويب": "Web app hacking",
 
-    # ---- languages ----
     "١٠٠ محادثة إنجليزية": "100 English conversations",
     "تحدث الإنجليزية في 10 أيام": "Speak English in 10 days",
     "إنجليزي مستوى 1": "English level 1",
 
-    # ---- marketing ----
     "دليل العمل الحر": "Freelancing guide",
     "تسويق عبر النت": "Network marketing",
     "دليل المنتجات الرقمية": "Sell digital products guide",
     "دليل السيو": "SEO guide",
     "مصطلحات التسويق": "Marketing terms",
 
-    # ---- maintenance ----
     "مكونات صيانة الجوال": "Mobile maintenance components",
     "أساسيات صيانة الجوال": "Mobile maintenance basics",
     "ورشة صيانة الجوال": "Mobile repair workshop",
 
-    # ---- office ----
     "excel": "excel",
     "تعلم Microsoft word": "Microsoft Word",
     "شرح الاكسل خطوة بخطوة": "Excel step by step",
 }
 
-# تحميل الكاتالوج
 def load_catalog() -> dict:
-    use_path = CATALOG_PATH
-    if not use_path.exists():
-        # دعم المسار القديم إن وجد
-        alt = BASE_DIR / "catalog.json"
-        if alt.exists():
-            use_path = alt
+    use_path = CATALOG_PATH if CATALOG_PATH.exists() else (BASE_DIR / "catalog.json")
     log.info("📘 Using catalog file: %s", use_path.relative_to(BASE_DIR))
     with use_path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 CATALOG = load_catalog()
 
-# ----------------------- أدوات لغة/ترجمة -----------------------
+# ----------------------- لغة/ترجمة -----------------------
 def get_lang(user_id: int) -> str:
     return USER_LANG.get(user_id, "ar")
 
@@ -155,16 +145,36 @@ def t(user_id: int, key: str, **kwargs) -> str:
     return I18N[lang][key].format(**kwargs)
 
 def display_title(raw_title, lang: str) -> str:
-    """يدعم:
-       - title كنص: يحاول ترجمة عبر TITLE_EN_MAP لو lang='en'
-       - أو title ككائن {"ar": "...", "en": "..."}"""
     if isinstance(raw_title, dict):
         return raw_title.get(lang) or raw_title.get("ar") or next(iter(raw_title.values()))
     if lang == "en":
         return TITLE_EN_MAP.get(str(raw_title).strip(), str(raw_title))
     return str(raw_title)
 
-# ----------------------- تحقّق الاشتراك -----------------------
+# ----------------------- تحقّق الاشتراك (محسّن) -----------------------
+REQUIRED_CHAT_ID: int | str | None = None
+
+def _norm_channel(username: str) -> str:
+    u = username.strip()
+    return u if (not u) or u.startswith("@") else f"@{u}"
+
+async def _resolve_required_chat_id(context: ContextTypes.DEFAULT_TYPE) -> int | str | None:
+    global REQUIRED_CHAT_ID
+    if not REQUIRED_CHANNEL:
+        return None
+    if REQUIRED_CHAT_ID is not None:
+        return REQUIRED_CHAT_ID
+    try:
+        handle = _norm_channel(REQUIRED_CHANNEL)
+        chat = await context.bot.get_chat(handle)
+        REQUIRED_CHAT_ID = chat.id
+        return REQUIRED_CHAT_ID
+    except Exception as e:
+        # ما قدرنا نحل الـ @username (قناة خاصة/اسم خاطئ) — نستخدم النص كما هو
+        log.warning("resolve channel failed: %s", e)
+        REQUIRED_CHAT_ID = _norm_channel(REQUIRED_CHANNEL)
+        return REQUIRED_CHAT_ID
+
 async def ensure_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not REQUIRED_CHANNEL:
         return True
@@ -172,27 +182,47 @@ async def ensure_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user = update.effective_user
         if not user:
             return False
-        member = await context.bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user.id)
+        chat_id = await _resolve_required_chat_id(context)
+        member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user.id)
         status = member.status  # 'creator','administrator','member','left','kicked','restricted'
-        if status in ("member", "administrator", "creator"):
+        return status in ("member", "administrator", "creator")
+    except Forbidden as e:
+        # البوت ليس أدمن في القناة → لا يستطيع التحقق. لا نمنع المستخدمين.
+        log.warning("membership check forbidden; skipping gate: %s", e)
+        return True
+    except BadRequest as e:
+        # لو "user not found" فعلاً → غير مشترك. أما "chat not found" نسمح.
+        msg = str(e).lower()
+        if "user not found" in msg:
+            return False
+        if "chat not found" in msg:
+            log.warning("membership check: chat not found; allowing user.")
             return True
+        log.warning("membership check bad request: %s", e)
+        return True
     except Exception as e:
+        # أي خطأ آخر → لا نغلق على المستخدم
         log.warning("membership check failed: %s", e)
-    # غير مشترك
-    if update.effective_chat:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=t(update.effective_user.id, "must_join"),
-        )
+        return True
+
+async def require_or_hint_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    ok = await ensure_membership(update, context)
+    if ok:
+        return True
+    # أرسل زر الانضمام
+    user_id = update.effective_user.id
+    join_text = t(user_id, "must_join")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(I18N[get_lang(user_id)]["join_btn"], url=f"https://t.me/{_norm_channel(REQUIRED_CHANNEL).lstrip('@')}")]
+    ])
+    await update.effective_chat.send_message(join_text, reply_markup=kb)
     return False
 
 # ----------------------- بناء القوائم -----------------------
 def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
     lang = get_lang(user_id)
     rows = []
-    # الأقسام
     for key in ["prog", "design", "security", "languages", "marketing", "maintenance", "office"]:
-        label_ar = key  # سنعرض مترجم
         title = {
             "prog": {"ar": "البرمجة", "en": "Programming"},
             "design": {"ar": "التصميم", "en": "Design"},
@@ -204,7 +234,6 @@ def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
         }[key]
         text = f"{CAT_EMOJI.get(key,'📁')} {display_title(title, lang)}"
         rows.append([InlineKeyboardButton(text, callback_data=f"cat:{key}")])
-    # سطر اللغة + تواصل
     rows.append([
         InlineKeyboardButton(I18N["ar"]["arabic"], callback_data="lang:ar"),
         InlineKeyboardButton(I18N["en"]["english"], callback_data="lang:en"),
@@ -213,78 +242,55 @@ def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(contact_label, url=t(user_id, "menu_contact_value", admin=OWNER_USERNAME or ''))])
     return InlineKeyboardMarkup(rows)
 
-def back_kb(user_id: int, parent: str | None) -> InlineKeyboardMarkup:
-    rows = []
-    if parent:
-        rows.append([InlineKeyboardButton(f"⬅️ {t(user_id, 'back')}", callback_data=f"cat:{parent}")])
-    else:
-        rows.append([InlineKeyboardButton(f"🏠 {t(user_id, 'back')}", callback_data="home")])
-    return InlineKeyboardMarkup(rows)
-
 def section_kb(user_id: int, cat_key: str) -> InlineKeyboardMarkup:
     lang = get_lang(user_id)
     items = CATALOG.get(cat_key, [])
     rows = []
     for item in items:
-        # عنصر عادي أو مجموعة (children)
         title = display_title(item.get("title"), lang)
-        emoji = "📄"
         if "children" in item:
-            series_word = I18N[lang]["series"]
-            title = f"{title} ({series_word})"
-            emoji = "📚"
-            rows.append([InlineKeyboardButton(f"{emoji} {title}", callback_data=f"group:{cat_key}:{title}")])
+            title = f"{title} ({I18N[lang]['series']})"
+            rows.append([InlineKeyboardButton(f"📚 {title}", callback_data=f"group:{cat_key}:{title}")])
         else:
-            rows.append([InlineKeyboardButton(f"{emoji} {title}", callback_data=f"book:{item['path']}")])
-    # زر رجوع
+            rows.append([InlineKeyboardButton(f"📄 {title}", callback_data=f"book:{item['path']}")])
     rows.append([InlineKeyboardButton(f"⬅️ {t(user_id,'back')}", callback_data="home")])
     return InlineKeyboardMarkup(rows)
 
-def series_kb(user_id: int, cat_key: str, group_title_ar: str, children: list[dict]) -> InlineKeyboardMarkup:
+def series_kb(user_id: int, cat_key: str, children: list[dict]) -> InlineKeyboardMarkup:
     lang = get_lang(user_id)
     rows = []
-    # نعرض الأجزاء
-    for idx, ch in enumerate(children, start=1):
-        ch_title = display_title(ch.get("title") or f"الجزء {idx}", lang)
+    for ch in children:
+        ch_title = display_title(ch.get("title") or "Part", lang)
         rows.append([InlineKeyboardButton(f"📘 {ch_title}", callback_data=f"book:{ch['path']}")])
     rows.append([InlineKeyboardButton(f"⬅️ {t(user_id,'back')}", callback_data=f"cat:{cat_key}")])
     return InlineKeyboardMarkup(rows)
 
 # ----------------------- Handlers -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_membership(update, context):
+    if not await require_or_hint_join(update, context):
         return
     user_id = update.effective_user.id
-    # لا تغيّر لغته إن كانت مضبوطة—فقط اعرض القائمة
-    text = t(user_id, "home_title")
-    await update.effective_chat.send_message(text, reply_markup=main_menu_kb(user_id))
+    await update.effective_chat.send_message(t(user_id, "home_title"), reply_markup=main_menu_kb(user_id))
 
 async def lang_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     _, lang = q.data.split(":")
     set_lang(q.from_user.id, lang)
-    await q.edit_message_text(
-        t(q.from_user.id, "home_title"),
-        reply_markup=main_menu_kb(q.from_user.id),
-    )
+    await q.edit_message_text(t(q.from_user.id, "home_title"), reply_markup=main_menu_kb(q.from_user.id))
 
 async def to_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.edit_message_text(
-        t(q.from_user.id, "home_title"),
-        reply_markup=main_menu_kb(q.from_user.id),
-    )
+    await q.edit_message_text(t(q.from_user.id, "home_title"), reply_markup=main_menu_kb(q.from_user.id))
 
 async def open_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_membership(update, context):
+    if not await require_or_hint_join(update, context):
         return
     q = update.callback_query
     await q.answer()
     _, cat = q.data.split(":")
     kb = section_kb(q.from_user.id, cat)
-    # عنوان القسم بحسب اللغة
     lang = get_lang(q.from_user.id)
     title_map = {
         "prog": {"ar": "البرمجة", "en": "Programming"},
@@ -301,28 +307,17 @@ async def open_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def open_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _, cat, group_title_encoded = q.data.split(":", 2)
-    # العثور على المجموعة
-    group = None
-    for item in CATALOG.get(cat, []):
-        if "children" in item:
-            # نقارن بالعنوان بالعربي أو بالإنجليزي
-            title_ar = display_title(item["title"], "ar")
-            title_en = display_title(item["title"], "en")
-            if group_title_encoded in (title_ar, f"{title_en} (Series)", title_en, f"{title_ar} (سلسلة)"):
-                group = item
-                break
+    _, cat, _title = q.data.split(":", 2)
+    # أول عنصر يحوي children في هذا القسم يُعتبر السلسلة المطلوبة
+    group = next((i for i in CATALOG.get(cat, []) if "children" in i), None)
     if not group:
-        await q.edit_message_reply_markup(reply_markup=back_kb(q.from_user.id, cat))
+        await q.edit_message_reply_markup(reply_markup=section_kb(q.from_user.id, cat))
         return
-    kb = series_kb(q.from_user.id, cat, display_title(group["title"], "ar"), group["children"])
-    await q.edit_message_text(
-        f"📚 {display_title(group['title'], get_lang(q.from_user.id))}",
-        reply_markup=kb
-    )
+    kb = series_kb(q.from_user.id, cat, group["children"])
+    await q.edit_message_text(f"📚 {display_title(group['title'], get_lang(q.from_user.id))}", reply_markup=kb)
 
 async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_membership(update, context):
+    if not await require_or_hint_join(update, context):
         return
     q = update.callback_query
     await q.answer()
@@ -333,7 +328,7 @@ async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             t(q.from_user.id, "not_found", path=rel_path),
             parse_mode=ParseMode.HTML,
-            reply_markup=back_kb(q.from_user.id, None),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"⬅️ {t(q.from_user.id,'back')}", callback_data="home")]]),
         )
         return
     try:
@@ -345,14 +340,12 @@ async def send_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         log.error("Failed to send %s: %s", rel_path, e)
-    # لا نغير الرسالة الأصلية؛ فقط نجيب الملف
 
 async def reload_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER_USERNAME and update.effective_user.username != OWNER_USERNAME:
         return
     global CATALOG
     CATALOG = load_catalog()
-    # إحصاء
     catalog_count = {k: len(v) for k, v in CATALOG.items()}
     await update.message.reply_text(f"✅ تم إعادة تحميل الكاتالوج:\nحالة المحتوى:\n{catalog_count}")
 
@@ -388,7 +381,6 @@ def main():
     app.add_handler(CallbackQueryHandler(open_group, pattern=r"^group:.+"))
     app.add_handler(CallbackQueryHandler(send_book, pattern=r"^book:.+"))
 
-    # شغّل healthz في ثريد منفصل
     import threading
     threading.Thread(target=run_health_server, daemon=True).start()
 
