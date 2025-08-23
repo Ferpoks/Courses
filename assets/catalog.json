@@ -22,7 +22,7 @@
   "security": [
     { "title": "أمن الأجهزة المحمولة", "path": "assets/security/ai_for_mobile.pdf" },
     { "title": "كالي لينكس OS", "path": "assets/security/kali_linux_os.pdf" },
-    { "title": "أخلاقيات الأمن", "path": "assets/security/ai_ethics.pdf" },
+    { "title": "اخلاقيات الذكاء الاصطناعي", "path": "assets/security/ai_ethics.pdf" },
     { "title": "اختراق الشبكات", "path": "assets/security/network_hacking.pdf" },
     { "title": "لينكس للمبتدئين", "path": "assets/security/linux_for_beginners.pdf" },
 
