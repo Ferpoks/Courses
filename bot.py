@@ -8,7 +8,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputFile,   # يعمل على جميع الإصدارات
+    InputFile,   # متوافق مع كل الإصدارات
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -29,7 +29,6 @@ TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").strip()
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()  # إن أردت تفعيل الاشتراك الإلزامي
 
-# حاول استخدام assets/catalog.json ثم fallback إلى catalog.json
 PREFERRED = Path("assets/catalog.json")
 FALLBACK = Path("catalog.json")
 CATALOG_PATH = str(PREFERRED if PREFERRED.exists() else FALLBACK)
@@ -57,27 +56,24 @@ def load_catalog() -> Dict[str, List[Dict[str, str]]]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # تأكد من الأنواع
     for k, v in list(data.items()):
         if not isinstance(v, list):
             logger.warning("Catalog key %s is not a list; skipping.", k)
             data.pop(k, None)
 
-    # حذف تكرار C من الأمن (لو موجود بالخطأ)
+    # إزالة C من الأمن (لو انحط بالخطأ)
     if "security" in data:
         data["security"] = [
             item for item in data["security"]
             if not item.get("path", "").lower().endswith(("security_language_programming_c.pdf", "c_programming.pdf"))
         ]
 
-    # عدّ العناصر
     counts = {k: len(v) for k, v in data.items()}
     logger.info("📦 Catalog on start: %s", counts)
     return data
 
 CATALOG = load_catalog()
 
-# أسماء الأقسام → عناوين وأيقونات
 SECTION_META = {
     "prog": ("📘 كتب البرمجة", "prog"),
     "design": ("🎨 كتب التصميم", "design"),
@@ -110,16 +106,42 @@ def build_section_menu(section_key: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("↩️ رجوع للقائمة", callback_data="back:menu")])
     return InlineKeyboardMarkup(rows)
 
-async def send_book(chat_id: int, path: str, context: ContextTypes.DEFAULT_TYPE):
-    # تحقّق من وجود الملف
-    fs_path = Path(path)
-    if not fs_path.exists():
-        # جرّب بدون assets/ إن فشل (تصحيح تلقائي)
-        alt = Path("assets") / path if not path.startswith("assets/") else Path(path.replace("assets/", ""))
-        if alt.exists():
-            fs_path = alt
+# ----------- محلّل مسار ذكي: يحاول إيجاد الملف بأي طريقة -----------
+def resolve_file(path: str) -> Path | None:
+    p = Path(path)
+    candidates = [p]
 
-    if not fs_path.exists():
+    # جرّب مع وبدون assets/
+    if path.startswith("assets/"):
+        candidates.append(Path(path.replace("assets/", "")))
+    else:
+        candidates.append(Path("assets") / path)
+
+    for c in candidates:
+        if c.exists():
+            return c
+
+    # ابحث بالاسم في كامل المشروع (assets/ وأيضًا الجذر)
+    name = Path(path).name
+    for base in [Path("assets"), Path(".")]:
+        for found in base.rglob(name):
+            if found.is_file():
+                logger.info("🔎 Resolved by search: %s -> %s", path, found)
+                return found
+
+    # ابحث بدون حساسية حالة الأحرف بالـ stem
+    target_stem = Path(name).stem.lower()
+    for base in [Path("assets"), Path(".")]:
+        for found in base.rglob("*.pdf"):
+            if found.stem.lower() == target_stem:
+                logger.info("🔎 Resolved by stem: %s -> %s", path, found)
+                return found
+
+    return None
+
+async def send_book(chat_id: int, path: str, context: ContextTypes.DEFAULT_TYPE):
+    fs_path = resolve_file(path)
+    if not fs_path:
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"⚠️ لم أجد الملف في السيرفر:\n<code>{path}</code>",
@@ -128,7 +150,6 @@ async def send_book(chat_id: int, path: str, context: ContextTypes.DEFAULT_TYPE)
         logger.warning("Missing file: %s", path)
         return
 
-    # إرسال الملف باستخدام InputFile (متوافق مع جميع الإصدارات)
     try:
         with fs_path.open("rb") as f:
             await context.bot.send_document(
@@ -150,7 +171,6 @@ async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CATALOG
     try:
         CATALOG = load_catalog()
-        # عدّ العناصر للعرض
         counts = "\n".join([f"• {SECTION_META.get(k, (k,''))[0]}: {len(v)}" for k, v in CATALOG.items()])
         await update.effective_chat.send_message(f"تم إعادة تحميل الكاتالوج ✅\nحالة المحتوى:\n{counts}")
     except Exception as e:
@@ -194,7 +214,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
