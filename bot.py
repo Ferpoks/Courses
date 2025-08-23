@@ -9,8 +9,17 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
-    FSInputFile,
 )
+# --------- توافق مع نسخ PTB المختلفة (FSInputFile / InputFile) ----------
+try:
+    from telegram import FSInputFile as TG_FSInputFile  # PTB v20+
+except Exception:
+    TG_FSInputFile = None  # type: ignore
+    try:
+        from telegram import InputFile as TG_InputFile  # PTB v13
+    except Exception:
+        TG_InputFile = None  # type: ignore
+
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -127,6 +136,14 @@ def pick_emoji(title: str) -> str:
             return emo
     return "📄"
 
+# توافق الإرسال مع كل النسخ
+def make_input_file(path: str):
+    if TG_FSInputFile is not None:
+        return TG_FSInputFile(path)  # PTB v20+
+    if TG_InputFile is not None:
+        return TG_InputFile(open(path, "rb"))  # PTB v13
+    return open(path, "rb")  # آخر حل
+
 # تحميل الكاتالوج
 def load_catalog() -> Dict[str, Any]:
     with open(CATALOG_PATH, "r", encoding="utf-8") as f:
@@ -154,8 +171,7 @@ async def ensure_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         return allowed
     except Exception as e:
         log.warning("membership check failed: %s", e)
-        # في حالة خطأ من تيليجرام، نسمح مؤقتًا بدل ما نحبس المستخدمين
-        return True
+        return True  # لا نمنع بسبب خطأ مؤقت من API
 
 async def show_join_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str):
     txt = T[lang]["not_member_title"]
@@ -256,7 +272,6 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_lang.get(u.id, "ar") if u else "ar"
     await update.message.reply_text(T[lang]["reloaded"])
 
-# Debug: /where maintenance
 async def cmd_where(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("usage: /where <section>")
@@ -330,7 +345,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning("Missing/invalid file path: %r", path)
             await q.message.reply_text(T[lang]["missing"].format(path=str(path)), parse_mode=ParseMode.HTML)
             return
-        await q.message.reply_document(document=FSInputFile(path), caption=f"{pick_emoji(title)} {title}")
+        await q.message.reply_document(document=make_input_file(path), caption=f"{pick_emoji(title)} {title}")
         return
 
     # عنصر له children -> عرض القائمة الفرعية
@@ -368,7 +383,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning("Missing/invalid file path: %r", path)
             await q.message.reply_text(T[lang]["missing"].format(path=str(path)), parse_mode=ParseMode.HTML)
             return
-        await q.message.reply_document(document=FSInputFile(path), caption=f"{pick_emoji(title)} {title}")
+        await q.message.reply_document(document=make_input_file(path), caption=f"{pick_emoji(title)} {title}")
         return
 
 # ===================== Health Server =====================
